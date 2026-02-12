@@ -1,8 +1,10 @@
 import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { db } from './db/index.js';
-import { proposals, templates, users } from './db/schema.js';
+import { paymentSessions, proposals, templates, userSubscriptions, users } from './db/schema.js';
 
 export type ProposalStatus = 'pendente' | 'vendida' | 'cancelada';
+export type PaymentSessionMode = 'payment' | 'subscription';
+export type PaymentSessionStatus = 'pending' | 'paid' | 'failed' | 'expired';
 
 export interface CreateUserInput {
   name: string;
@@ -16,6 +18,18 @@ export interface CreateProposalInput {
   clientName: string;
   description: string;
   value: string;
+}
+
+export interface CreatePaymentSessionInput {
+  userId: number;
+  proposalId?: number;
+  mode: PaymentSessionMode;
+  stripeSessionId: string;
+  stripePaymentIntentId?: string;
+  stripeSubscriptionId?: string;
+  amount: string;
+  currency: string;
+  metadata?: Record<string, string>;
 }
 
 export interface SalesMetrics {
@@ -47,9 +61,26 @@ export class Storage {
 
   async findUserById(id: number) {
     const [user] = await db
-      .select({ id: users.id, name: users.name, email: users.email, createdAt: users.createdAt })
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        stripeCustomerId: users.stripeCustomerId,
+        stripeConnectAccountId: users.stripeConnectAccountId,
+        createdAt: users.createdAt
+      })
       .from(users)
       .where(eq(users.id, id));
+
+    return user;
+  }
+
+  async setUserStripeCustomerId(userId: number, stripeCustomerId: string) {
+    const [user] = await db
+      .update(users)
+      .set({ stripeCustomerId })
+      .where(eq(users.id, userId))
+      .returning({ id: users.id, stripeCustomerId: users.stripeCustomerId });
 
     return user;
   }
@@ -133,6 +164,131 @@ export class Storage {
       .where(and(eq(templates.id, templateId), eq(templates.isActive, true)));
 
     return template;
+  }
+
+  async createPaymentSession(input: CreatePaymentSessionInput) {
+    const [session] = await db
+      .insert(paymentSessions)
+      .values({
+        userId: input.userId,
+        proposalId: input.proposalId,
+        mode: input.mode,
+        stripeSessionId: input.stripeSessionId,
+        stripePaymentIntentId: input.stripePaymentIntentId,
+        stripeSubscriptionId: input.stripeSubscriptionId,
+        amount: input.amount,
+        currency: input.currency,
+        status: 'pending',
+        metadata: input.metadata ?? {},
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return session;
+  }
+
+  async findPaymentSessionByStripeSessionId(stripeSessionId: string) {
+    const [session] = await db.select().from(paymentSessions).where(eq(paymentSessions.stripeSessionId, stripeSessionId));
+    return session;
+  }
+
+
+  async findPaymentSessionByPaymentIntentId(stripePaymentIntentId: string) {
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(eq(paymentSessions.stripePaymentIntentId, stripePaymentIntentId));
+
+    return session;
+  }
+
+  async markPaymentSessionStatus(stripeSessionId: string, status: PaymentSessionStatus) {
+    const [session] = await db
+      .update(paymentSessions)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(paymentSessions.stripeSessionId, stripeSessionId))
+      .returning();
+
+    return session;
+  }
+
+  async getRecentPaymentsByUser(userId: number) {
+    return db
+      .select({
+        id: paymentSessions.id,
+        proposalId: paymentSessions.proposalId,
+        mode: paymentSessions.mode,
+        status: paymentSessions.status,
+        amount: paymentSessions.amount,
+        currency: paymentSessions.currency,
+        createdAt: paymentSessions.createdAt
+      })
+      .from(paymentSessions)
+      .where(eq(paymentSessions.userId, userId))
+      .orderBy(desc(paymentSessions.createdAt));
+  }
+
+  async upsertUserSubscription(input: {
+    userId: number;
+    stripeSubscriptionId: string;
+    stripeCustomerId: string;
+    stripePriceId: string;
+    status: string;
+    currentPeriodEnd: Date | null;
+    cancelAtPeriodEnd: boolean;
+  }) {
+    const existing = await this.findSubscriptionByStripeId(input.stripeSubscriptionId);
+
+    if (existing) {
+      const [updated] = await db
+        .update(userSubscriptions)
+        .set({
+          stripePriceId: input.stripePriceId,
+          status: input.status,
+          currentPeriodEnd: input.currentPeriodEnd,
+          cancelAtPeriodEnd: input.cancelAtPeriodEnd,
+          updatedAt: new Date()
+        })
+        .where(eq(userSubscriptions.stripeSubscriptionId, input.stripeSubscriptionId))
+        .returning();
+
+      return updated;
+    }
+
+    const [created] = await db
+      .insert(userSubscriptions)
+      .values({
+        userId: input.userId,
+        stripeSubscriptionId: input.stripeSubscriptionId,
+        stripeCustomerId: input.stripeCustomerId,
+        stripePriceId: input.stripePriceId,
+        status: input.status,
+        currentPeriodEnd: input.currentPeriodEnd,
+        cancelAtPeriodEnd: input.cancelAtPeriodEnd,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return created;
+  }
+
+  async findSubscriptionByStripeId(stripeSubscriptionId: string) {
+    const [subscription] = await db
+      .select()
+      .from(userSubscriptions)
+      .where(eq(userSubscriptions.stripeSubscriptionId, stripeSubscriptionId));
+
+    return subscription;
+  }
+
+  async getActiveSubscriptionByUser(userId: number) {
+    const [subscription] = await db
+      .select()
+      .from(userSubscriptions)
+      .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, 'active')))
+      .orderBy(desc(userSubscriptions.updatedAt));
+
+    return subscription;
   }
 
   async getSalesMetrics(userId: number): Promise<SalesMetrics> {

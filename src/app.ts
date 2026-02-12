@@ -5,6 +5,7 @@ import authRoutes from './routes/auth.routes.js';
 import proposalsRoutes from './routes/proposals.routes.js';
 import templatesRoutes from './routes/templates.routes.js';
 import metricsRoutes from './routes/metrics.routes.js';
+import paymentsRoutes from './routes/payments.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 
 const app = express();
@@ -13,6 +14,8 @@ const corsOrigin = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.tr
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
 app.use(
   helmet({
@@ -25,7 +28,7 @@ app.use(
     origin: corsOrigin,
     credentials: true,
     methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization']
+    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
   })
 );
 app.use(express.json({ limit: '30kb' }));
@@ -40,6 +43,7 @@ app.use('/api/auth', authRoutes);
 app.use('/api/proposals', proposalsRoutes);
 app.use('/api/templates', templatesRoutes);
 app.use('/api/metrics', metricsRoutes);
+app.use('/api/payments', paymentsRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {

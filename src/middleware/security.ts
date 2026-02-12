@@ -30,6 +30,14 @@ function sanitizeObject(value: unknown, depth = 0): unknown {
 }
 
 export function sanitizeRequestBody(req: Request, _res: Response, next: NextFunction) {
+  if (req.originalUrl.startsWith('/api/payments/webhook')) {
+    return next();
+  }
+
+  if (Buffer.isBuffer(req.body)) {
+    return next();
+  }
+
   if (req.body && typeof req.body === 'object') {
     req.body = sanitizeObject(req.body);
   }
@@ -54,6 +62,7 @@ export const apiRateLimiter = rateLimit({
   max: Number(process.env.RATE_LIMIT_API_MAX ?? 200),
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.originalUrl.startsWith('/api/payments/webhook'),
   message: {
     message: 'Muitas requisições. Tente novamente em instantes.'
   }
