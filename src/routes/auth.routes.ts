@@ -1,21 +1,33 @@
 import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
+import { authRateLimiter } from '../middleware/security.js';
 import { authenticate, signAccessToken, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
 
 const router = Router();
 
+const passwordSchema = z
+  .string()
+  .min(12, 'Senha precisa ter no mínimo 12 caracteres.')
+  .max(72, 'Senha pode ter no máximo 72 caracteres.')
+  .regex(/[A-Z]/, 'Senha deve ter ao menos uma letra maiúscula.')
+  .regex(/[a-z]/, 'Senha deve ter ao menos uma letra minúscula.')
+  .regex(/[0-9]/, 'Senha deve ter ao menos um número.')
+  .regex(/[^A-Za-z0-9]/, 'Senha deve ter ao menos um caractere especial.');
+
 const registerSchema = z.object({
-  name: z.string().min(2),
-  email: z.string().email(),
-  password: z.string().min(6)
+  name: z.string().trim().min(2).max(120),
+  email: z.string().trim().email().max(180),
+  password: passwordSchema
 });
 
 const loginSchema = z.object({
-  email: z.string().email(),
-  password: z.string().min(6)
+  email: z.string().trim().email().max(180),
+  password: z.string().min(1).max(72)
 });
+
+router.use(authRateLimiter);
 
 router.post('/register', async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
@@ -24,16 +36,17 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ message: 'Dados inválidos.', errors: parsed.error.flatten() });
   }
 
-  const existing = await storage.findUserByEmail(parsed.data.email);
+  const normalizedEmail = parsed.data.email.toLowerCase();
+  const existing = await storage.findUserByEmail(normalizedEmail);
 
   if (existing) {
     return res.status(409).json({ message: 'E-mail já cadastrado.' });
   }
 
-  const passwordHash = await bcrypt.hash(parsed.data.password, 10);
+  const passwordHash = await bcrypt.hash(parsed.data.password, 12);
   const user = await storage.createUser({
     name: parsed.data.name,
-    email: parsed.data.email,
+    email: normalizedEmail,
     passwordHash
   });
 
@@ -49,7 +62,8 @@ router.post('/login', async (req, res) => {
     return res.status(400).json({ message: 'Dados inválidos.', errors: parsed.error.flatten() });
   }
 
-  const user = await storage.findUserByEmail(parsed.data.email);
+  const normalizedEmail = parsed.data.email.toLowerCase();
+  const user = await storage.findUserByEmail(normalizedEmail);
 
   if (!user) {
     return res.status(401).json({ message: 'Credenciais inválidas.' });

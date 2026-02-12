@@ -1,132 +1,104 @@
 # Fechou! Backend API
 
-API em **Express + TypeScript + Drizzle ORM + PostgreSQL** para gestão de freelancers, propostas, templates e métricas de vendas.
+API em **Express + TypeScript + Drizzle ORM + PostgreSQL + Stripe** para gestão de freelancers, propostas, templates, métricas e pagamentos.
 
 ## 1) Pré-requisitos
-
 - Node.js 20+
 - PostgreSQL 14+
+- Conta Stripe (modo teste ou produção)
 
 ## 2) Configuração rápida
-
 ```bash
 cp .env.example .env
 npm install
 ```
 
-Edite o `.env` com a conexão do seu PostgreSQL e segredo JWT.
+Preencha no `.env`:
+- Banco (`DATABASE_URL`)
+- Segurança (`JWT_SECRET` forte)
+- Stripe (`STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, `STRIPE_MONTHLY_PLAN_PRICE_ID`)
 
-## 3) Banco de dados (Drizzle)
-
-1. Crie o banco `fechou` no PostgreSQL.
-2. Gere migrações:
-
+## 3) Banco de dados
 ```bash
 npm run db:generate
-```
-
-3. Execute migrações:
-
-```bash
 npm run db:migrate
 ```
 
-> Estruturas principais:
-> - `users`
-> - `proposals`
-> - `templates`
-
-## 4) Rodando o backend
-
-Modo desenvolvimento:
-
+## 4) Rodando backend
 ```bash
 npm run dev
 ```
 
-Build + produção:
-
-```bash
-npm run build
-npm start
-```
-
 Health check:
-
 ```bash
 curl http://localhost:3001/health
 ```
 
-## 5) Endpoints para conectar no frontend
-
+## 5) Endpoints principais
 Base URL: `http://localhost:3001/api`
 
 ### Auth
-- `POST /auth/register` → registerUser
-- `POST /auth/login` → loginUser
-- `GET /auth/me` → getUserProfile (Bearer token)
+- `POST /auth/register`
+- `POST /auth/login`
+- `GET /auth/me`
 
 ### Propostas
-- `POST /proposals` → createProposal
-- `GET /proposals?status=pendente|vendida|cancelada` → listProposals
-- `GET /proposals/:id` → getProposalById
-- `PATCH /proposals/:id/status` → updateProposalStatus
+- `POST /proposals`
+- `GET /proposals?status=pendente|vendida|cancelada`
+- `GET /proposals/:id`
+- `PATCH /proposals/:id/status`
 
 ### Templates
-- `GET /templates?category=...` → listTemplates
-- `GET /templates/:id` → getTemplateDetails
+- `GET /templates?category=...`
+- `GET /templates/:id`
 
-### Dashboard
-- `GET /metrics/sales` → getSalesMetrics
+### Metrics
+- `GET /metrics/sales`
 
-## 6) Fluxo recomendado de integração no frontend
+### Payments (Stripe)
+- `POST /payments/proposals/:id/checkout` (freelancer gera link de checkout para cliente pagar a proposta)
+- `POST /payments/subscriptions/checkout` (freelancer assina seu plano mensal da plataforma)
+- `GET /payments/me` (histórico resumido de pagamentos e assinatura)
+- `POST /payments/webhook` (endpoint de webhook Stripe assinado)
 
-1. **Cadastro/Login**:
-   - Salve o `token` retornado em memória (ou storage seguro).
-2. **Requests autenticadas**:
-   - Envie header: `Authorization: Bearer <token>`.
-3. **Tela de propostas**:
-   - Use `GET /proposals` e filtros por status.
-4. **Detalhes da proposta/contrato**:
-   - Use `GET /proposals/:id`.
-5. **Mudança de status**:
-   - Use `PATCH /proposals/:id/status`.
-6. **Templates**:
-   - Use `GET /templates` para listagem e `GET /templates/:id` para preencher proposta nova.
-7. **Dashboard**:
-   - Use `GET /metrics/sales` para total de vendas, conversão e receita.
+## 6) Fluxos de pagamento
 
-## 7) Exemplos rápidos de consumo
+### 6.1 Cliente paga proposta do freelancer
+1. Freelancer autenticado chama `POST /payments/proposals/:id/checkout` com:
+   - `successUrl`
+   - `cancelUrl`
+   - opcional `clientEmail`
+2. Backend cria Stripe Checkout Session segura em modo `payment`.
+3. Frontend redireciona cliente para `checkoutUrl`.
+4. Stripe notifica `POST /payments/webhook`.
+5. Backend valida assinatura do webhook e marca proposta como `vendida`.
 
-### Registrar usuário
+### 6.2 Freelancer paga assinatura mensal da plataforma
+1. Freelancer autenticado chama `POST /payments/subscriptions/checkout` com `successUrl` e `cancelUrl`.
+2. Backend cria Checkout Session em modo `subscription` com o `STRIPE_MONTHLY_PLAN_PRICE_ID`.
+3. Stripe envia webhooks de assinatura e backend atualiza `user_subscriptions`.
 
+## 7) Segurança aplicada no módulo de pagamentos
+- Webhook Stripe validado por assinatura (`stripe-signature` + `STRIPE_WEBHOOK_SECRET`).
+- `Idempotency-Key` obrigatório na criação de sessões para evitar duplicidade.
+- Nenhum dado sensível do Stripe retornado para o frontend.
+- Validação estrita de entrada com Zod em todos endpoints de pagamento.
+- Separação de fluxo autenticado (checkout) e fluxo não autenticado (webhook assinado).
+- Status de pagamentos persistidos em tabela própria para auditoria.
+
+## 8) Exemplo rápido: checkout de proposta
 ```bash
-curl -X POST http://localhost:3001/api/auth/register \
-  -H "Content-Type: application/json" \
-  -d '{"name":"Ana","email":"ana@email.com","password":"123456"}'
-```
-
-### Login
-
-```bash
-curl -X POST http://localhost:3001/api/auth/login \
-  -H "Content-Type: application/json" \
-  -d '{"email":"ana@email.com","password":"123456"}'
-```
-
-### Criar proposta autenticada
-
-```bash
-curl -X POST http://localhost:3001/api/proposals \
+curl -X POST http://localhost:3001/api/payments/proposals/1/checkout \
   -H "Authorization: Bearer TOKEN_AQUI" \
+  -H "Idempotency-Key: 2f8d6d11-9e3a-4f2f-9f38-0d68f7f499b7" \
   -H "Content-Type: application/json" \
-  -d '{"title":"Landing Page","clientName":"Empresa X","description":"Escopo completo","value":3500}'
+  -d '{"successUrl":"https://seu-front.com/pagamento/sucesso","cancelUrl":"https://seu-front.com/pagamento/cancelado","clientEmail":"cliente@email.com"}'
 ```
 
-## Estrutura de código
-
-- `src/storage.ts`: ponte entre rotas e banco (Drizzle queries).
-- `src/db/schema.ts`: schema das tabelas.
-- `src/routes/*`: endpoints da API.
-- `src/middleware/auth.ts`: autenticação JWT.
-
+## 9) Observação importante de segurança
+Não existe software com risco zero absoluto. Este projeto foi reforçado com práticas robustas, mas para manter segurança de forma contínua você deve:
+- manter dependências atualizadas,
+- usar HTTPS sempre,
+- aplicar rotação de segredos,
+- monitorar logs/eventos,
+- executar testes de segurança em CI/CD (SAST/DAST e auditorias periódicas).

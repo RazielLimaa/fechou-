@@ -5,8 +5,10 @@ import { storage } from '../storage.js';
 const router = Router();
 
 const querySchema = z.object({
-  category: z.string().optional()
+  category: z.string().trim().min(1).max(100).optional()
 });
+
+const templateIdSchema = z.coerce.number().int().positive();
 
 router.get('/', async (req, res) => {
   const parsed = querySchema.safeParse(req.query);
@@ -20,13 +22,13 @@ router.get('/', async (req, res) => {
 });
 
 router.get('/:id', async (req, res) => {
-  const templateId = Number(req.params.id);
+  const parsedId = templateIdSchema.safeParse(req.params.id);
 
-  if (Number.isNaN(templateId)) {
+  if (!parsedId.success) {
     return res.status(400).json({ message: 'ID inválido.' });
   }
 
-  const template = await storage.getTemplateById(templateId);
+  const template = await storage.getTemplateById(parsedId.data);
 
   if (!template) {
     return res.status(404).json({ message: 'Template não encontrado.' });
