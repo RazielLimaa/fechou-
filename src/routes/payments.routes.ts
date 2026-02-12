@@ -292,21 +292,14 @@ router.post('/webhook', async (req, res) => {
       event.type === 'customer.subscription.created'
     ) {
       const subscription = event.data.object;
+      const userId = Number(subscription.metadata?.userId ?? 0);
       const priceId = subscription.items.data[0]?.price?.id;
-      const stripeCustomerId = String(subscription.customer);
-
-      let userId = Number(subscription.metadata?.userId ?? 0);
-
-      if (userId <= 0) {
-        const userByCustomer = await storage.findUserByStripeCustomerId(stripeCustomerId);
-        userId = userByCustomer?.id ?? 0;
-      }
 
       if (userId > 0 && priceId) {
         await storage.upsertUserSubscription({
           userId,
           stripeSubscriptionId: subscription.id,
-          stripeCustomerId,
+          stripeCustomerId: String(subscription.customer),
           stripePriceId: priceId,
           status: subscription.status,
           currentPeriodEnd: subscription.current_period_end ? new Date(subscription.current_period_end * 1000) : null,
