@@ -75,6 +75,21 @@ export class Storage {
     return user;
   }
 
+
+  async findUserByStripeCustomerId(stripeCustomerId: string) {
+    const [user] = await db
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        stripeCustomerId: users.stripeCustomerId
+      })
+      .from(users)
+      .where(eq(users.stripeCustomerId, stripeCustomerId));
+
+    return user;
+  }
+
   async setUserStripeCustomerId(userId: number, stripeCustomerId: string) {
     const [user] = await db
       .update(users)
@@ -191,7 +206,6 @@ export class Storage {
     const [session] = await db.select().from(paymentSessions).where(eq(paymentSessions.stripeSessionId, stripeSessionId));
     return session;
   }
-
 
   async findPaymentSessionByPaymentIntentId(stripePaymentIntentId: string) {
     const [session] = await db
