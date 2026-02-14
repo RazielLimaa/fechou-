@@ -1,8 +1,17 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { storage } from '../storage.js';
+import { requirePlan } from "../middleware/requirePlan.js";
+import { authenticate } from '../middleware/auth.js';
 
 const router = Router();
+
+router.use(authenticate);
+router.use(requirePlan("pro"));
+
+router.get("/advanced", async (req, res) => {
+  // ...
+});
 
 const querySchema = z.object({
   category: z.string().trim().min(1).max(100).optional()

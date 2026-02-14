@@ -9,7 +9,7 @@ const router = Router();
 
 const passwordSchema = z
   .string()
-  .min(12, 'Senha precisa ter no mínimo 12 caracteres.')
+  .min(8, 'Senha precisa ter no mínimo 12 caracteres.')
   .max(72, 'Senha pode ter no máximo 72 caracteres.')
   .regex(/[A-Z]/, 'Senha deve ter ao menos uma letra maiúscula.')
   .regex(/[a-z]/, 'Senha deve ter ao menos uma letra minúscula.')
@@ -27,7 +27,7 @@ const loginSchema = z.object({
   password: z.string().min(1).max(72)
 });
 
-router.use(authRateLimiter);
+// router.use(authRateLimiter);
 
 router.post('/register', async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);

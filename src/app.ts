@@ -1,6 +1,6 @@
 import express from 'express';
 import cors from 'cors';
-import helmet from 'helmet';
+import "dotenv/config";
 import authRoutes from './routes/auth.routes.js';
 import proposalsRoutes from './routes/proposals.routes.js';
 import templatesRoutes from './routes/templates.routes.js';
@@ -9,28 +9,44 @@ import paymentsRoutes from './routes/payments.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 
 const app = express();
+const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
+  const allowlist = [
+    "http://http://127.0.0.1:5173", // Vite (dev)
+    "http://localhost:5174", // se às vezes muda
+    process.env.FRONTEND_URL, // produção (ex: https://fechou.app)
+  ].filter(Boolean) as string[];
 
-const corsOrigin = process.env.CORS_ORIGIN?.split(',').map((origin) => origin.trim()) ?? true;
+  // requests sem origin (curl/postman) -> permitir
+  if (!origin) return cb(null, true);
+
+  if (allowlist.includes(origin)) return cb(null, true);
+
+  return cb(new Error(`CORS blocked for origin: ${origin}`));
+};
+
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
+  .split(",")
+  .map((s) => s.trim())
+  .filter(Boolean);
 
 app.use(
-  helmet({
-    crossOriginResourcePolicy: { policy: 'cross-origin' },
-    contentSecurityPolicy: false
-  })
-);
-app.use(
   cors({
-    origin: corsOrigin,
+    origin(origin, cb) {
+      if (!origin) return cb(null, true); // curl/postman
+      if (allowedOrigins.includes(origin)) return cb(null, true);
+      return cb(new Error(`CORS blocked for origin: ${origin}`));
+    },
     credentials: true,
-    methods: ['GET', 'POST', 'PATCH', 'PUT', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key']
   })
 );
+
+app.options("*", cors());
+
 app.use(express.json({ limit: '30kb' }));
 app.use(sanitizeRequestBody);
 app.use('/api', apiRateLimiter);
