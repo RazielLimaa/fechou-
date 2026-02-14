@@ -1,4 +1,5 @@
 import { Router } from 'express';
+import crypto from 'crypto';
 import { z } from 'zod';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage, type ProposalStatus } from '../storage.js';
@@ -21,7 +22,123 @@ const querySchema = z.object({
   status: z.enum(['pendente', 'vendida', 'cancelada']).optional()
 });
 
+const shareLinkSchema = z.object({
+  expiresInHours: z.coerce.number().int().min(1).max(24 * 30).default(72)
+});
+
+const signContractSchema = z.object({
+  signerName: z.string().trim().min(2).max(140),
+  signerDocument: z.string().trim().min(5).max(40)
+});
+
+function hashSha256(value: string) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+router.get('/public/:token', async (req, res) => {
+  const token = String(req.params.token ?? '').trim();
+
+  if (token.length < 32) {
+    return res.status(400).json({ message: 'Token inválido.' });
+  }
+
+  const tokenHash = hashSha256(token);
+  const proposal = await storage.getProposalByShareTokenHash(tokenHash);
+
+  if (!proposal || !proposal.shareTokenExpiresAt || proposal.shareTokenExpiresAt.getTime() < Date.now()) {
+    return res.status(404).json({ message: 'Link de contrato inválido ou expirado.' });
+  }
+
+  return res.json({
+    id: proposal.id,
+    title: proposal.title,
+    clientName: proposal.clientName,
+    description: proposal.description,
+    value: proposal.value,
+    status: proposal.status,
+    contract: {
+      signed: Boolean(proposal.contractSignedAt),
+      signedAt: proposal.contractSignedAt,
+      signerName: proposal.contractSignerName,
+      canPay: Boolean(proposal.paymentReleasedAt)
+    }
+  });
+});
+
+router.post('/public/:token/sign', async (req, res) => {
+  const token = String(req.params.token ?? '').trim();
+  const parsed = signContractSchema.safeParse(req.body);
+
+  if (!parsed.success) {
+    return res.status(400).json({ message: 'Dados inválidos.', errors: parsed.error.flatten() });
+  }
+
+  if (token.length < 32) {
+    return res.status(400).json({ message: 'Token inválido.' });
+  }
+
+  const tokenHash = hashSha256(token);
+  const proposal = await storage.getProposalByShareTokenHash(tokenHash);
+
+  if (!proposal || !proposal.shareTokenExpiresAt || proposal.shareTokenExpiresAt.getTime() < Date.now()) {
+    return res.status(404).json({ message: 'Link de contrato inválido ou expirado.' });
+  }
+
+  if (proposal.contractSignedAt) {
+    return res.status(409).json({ message: 'Contrato já foi assinado.' });
+  }
+
+  const userAgent = String(req.headers['user-agent'] ?? 'unknown');
+  const signatureHash = hashSha256(
+    `${proposal.id}|${parsed.data.signerName}|${parsed.data.signerDocument}|${req.ip}|${userAgent}`
+  );
+
+  const signed = await storage.markProposalContractSignedByToken(
+    tokenHash,
+    parsed.data.signerName,
+    signatureHash
+  );
+
+  return res.status(201).json({
+    ok: true,
+    proposalId: signed?.id,
+    signedAt: signed?.contractSignedAt
+  });
+});
+
 router.use(authenticate);
+
+router.post('/:id/share-link', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
+
+  const parsedId = proposalIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) {
+    return res.status(400).json({ message: 'ID inválido.' });
+  }
+
+  const parsedBody = shareLinkSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    return res.status(400).json({ message: 'Dados inválidos.', errors: parsedBody.error.flatten() });
+  }
+
+  const proposal = await storage.getProposalById(userId, parsedId.data);
+  if (!proposal) {
+    return res.status(404).json({ message: 'Proposta não encontrada.' });
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashSha256(rawToken);
+  const expiresAt = new Date(Date.now() + parsedBody.data.expiresInHours * 60 * 60 * 1000);
+
+  await storage.setProposalShareToken(userId, parsedId.data, tokenHash, expiresAt);
+
+  return res.status(201).json({
+    shareToken: rawToken,
+    expiresAt,
+    path: `/api/proposals/public/${rawToken}`
+  });
+});
 
 router.post('/', async (req: AuthenticatedRequest, res) => {
   const parsed = createProposalSchema.safeParse(req.body);

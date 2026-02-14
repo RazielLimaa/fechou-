@@ -27,6 +27,8 @@ export interface CreatePaymentSessionInput {
   stripeSessionId: string;
   stripePaymentIntentId?: string;
   stripeSubscriptionId?: string;
+  mercadoPagoPreferenceId?: string;
+  mercadoPagoPaymentId?: string;
   amount: string;
   currency: string;
   metadata?: Record<string, string>;
@@ -115,6 +117,45 @@ export class Storage {
     return proposal;
   }
 
+  async getProposalByShareTokenHash(shareTokenHash: string) {
+    const [proposal] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.shareTokenHash, shareTokenHash));
+
+    return proposal;
+  }
+
+  async setProposalShareToken(userId: number, proposalId: number, shareTokenHash: string, expiresAt: Date) {
+    const [proposal] = await db
+      .update(proposals)
+      .set({
+        shareTokenHash,
+        shareTokenExpiresAt: expiresAt,
+        updatedAt: new Date()
+      })
+      .where(and(eq(proposals.id, proposalId), eq(proposals.userId, userId)))
+      .returning();
+
+    return proposal;
+  }
+
+  async markProposalContractSignedByToken(shareTokenHash: string, signerName: string, signatureHash: string) {
+    const [proposal] = await db
+      .update(proposals)
+      .set({
+        contractSignedAt: new Date(),
+        contractSignerName: signerName,
+        contractSignatureHash: signatureHash,
+        paymentReleasedAt: new Date(),
+        updatedAt: new Date()
+      })
+      .where(eq(proposals.shareTokenHash, shareTokenHash))
+      .returning();
+
+    return proposal;
+  }
+
   async updateProposalStatus(userId: number, proposalId: number, status: ProposalStatus) {
     const payload: { status: ProposalStatus; acceptedAt?: Date | null; cancelledAt?: Date | null; updatedAt: Date } = {
       status,
@@ -176,6 +217,8 @@ export class Storage {
         stripeSessionId: input.stripeSessionId,
         stripePaymentIntentId: input.stripePaymentIntentId,
         stripeSubscriptionId: input.stripeSubscriptionId,
+        mercadoPagoPreferenceId: input.mercadoPagoPreferenceId,
+        mercadoPagoPaymentId: input.mercadoPagoPaymentId,
         amount: input.amount,
         currency: input.currency,
         status: 'pending',
@@ -198,6 +241,51 @@ export class Storage {
       .select()
       .from(paymentSessions)
       .where(eq(paymentSessions.stripePaymentIntentId, stripePaymentIntentId));
+
+    return session;
+  }
+
+  async findPaymentSessionByMercadoPagoPreferenceId(preferenceId: string) {
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(eq(paymentSessions.mercadoPagoPreferenceId, preferenceId));
+
+    return session;
+  }
+
+  async findPaymentSessionByMercadoPagoPaymentId(paymentId: string) {
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(eq(paymentSessions.mercadoPagoPaymentId, paymentId));
+
+    return session;
+  }
+
+  async markMercadoPagoPayment(sessionId: number, mercadoPagoPaymentId: string, status: PaymentSessionStatus) {
+    const [session] = await db
+      .update(paymentSessions)
+      .set({ mercadoPagoPaymentId, status, updatedAt: new Date() })
+      .where(eq(paymentSessions.id, sessionId))
+      .returning();
+
+    return session;
+  }
+
+  async findLatestPendingPaymentSessionForProposal(proposalId: number, userId: number) {
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(
+        and(
+          eq(paymentSessions.proposalId, proposalId),
+          eq(paymentSessions.userId, userId),
+          eq(paymentSessions.mode, "payment"),
+          eq(paymentSessions.status, "pending")
+        )
+      )
+      .orderBy(desc(paymentSessions.createdAt));
 
     return session;
   }

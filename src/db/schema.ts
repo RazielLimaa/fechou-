@@ -38,6 +38,12 @@ export const proposals = pgTable('proposals', {
   status: proposalStatusEnum('status').notNull().default('pendente'),
   acceptedAt: timestamp('accepted_at'),
   cancelledAt: timestamp('cancelled_at'),
+  shareTokenHash: varchar('share_token_hash', { length: 128 }).unique(),
+  shareTokenExpiresAt: timestamp('share_token_expires_at'),
+  contractSignedAt: timestamp('contract_signed_at'),
+  contractSignerName: varchar('contract_signer_name', { length: 140 }),
+  contractSignatureHash: varchar('contract_signature_hash', { length: 128 }),
+  paymentReleasedAt: timestamp('payment_released_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
@@ -63,6 +69,8 @@ export const paymentSessions = pgTable('payment_sessions', {
   stripeSessionId: varchar('stripe_session_id', { length: 140 }).notNull().unique(),
   stripePaymentIntentId: varchar('stripe_payment_intent_id', { length: 140 }),
   stripeSubscriptionId: varchar('stripe_subscription_id', { length: 140 }),
+  mercadoPagoPreferenceId: varchar('mercado_pago_preference_id', { length: 140 }),
+  mercadoPagoPaymentId: varchar('mercado_pago_payment_id', { length: 140 }),
   amount: numeric('amount', { precision: 12, scale: 2 }).notNull(),
   currency: varchar('currency', { length: 10 }).notNull().default('brl'),
   metadata: jsonb('metadata').$type<Record<string, string>>().notNull().default({}),
