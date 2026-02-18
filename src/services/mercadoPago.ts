@@ -9,13 +9,13 @@ if (!accessToken) {
   console.warn("MERCADO_PAGO_ACCESS_TOKEN não definido. Endpoints Mercado Pago ficarão indisponíveis.");
 }
 
-type PreferenceItem = {
+export type PreferenceItem = {
   id: string;
   title: string;
-  description: string;
-  quantity: number;
-  currency_id: string;
-  unit_price: number;
+  description?: string;
+  quantity: number;          // deve ser inteiro >= 1
+  currency_id?: string;      // default BRL
+  unit_price: number;        // em REAIS, > 0, com até 2 casas
 };
 
 function getHeaders(idempotencyKey?: string) {
@@ -24,6 +24,47 @@ function getHeaders(idempotencyKey?: string) {
     "Content-Type": "application/json",
     ...(idempotencyKey ? { "X-Idempotency-Key": idempotencyKey } : {}),
   };
+}
+
+/** Converte "9,90" -> 9.9 e garante number finito com 2 casas */
+function toMoneyNumber(v: unknown): number {
+  const n =
+    typeof v === "string"
+      ? Number(v.trim().replace(/\./g, "").replace(",", "."))
+      : Number(v);
+
+  if (!Number.isFinite(n)) throw new Error(`unit_price inválido (NaN/Infinity): ${String(v)}`);
+
+  // arredonda pra 2 casas
+  return Math.round(n * 100) / 100;
+}
+
+function toIntQty(v: unknown): number {
+  const n = Number(v);
+  if (!Number.isFinite(n)) throw new Error(`quantity inválido (NaN/Infinity): ${String(v)}`);
+  const i = Math.trunc(n);
+  if (i < 1) throw new Error(`quantity inválido (<1): ${String(v)}`);
+  return i;
+}
+
+function normalizeItem(input: PreferenceItem): Required<PreferenceItem> {
+  const quantity = toIntQty(input.quantity);
+  const unit_price = toMoneyNumber(input.unit_price);
+
+  if (unit_price <= 0) throw new Error(`unit_price inválido (<=0): ${unit_price}`);
+
+  const currency_id = (input.currency_id ?? "BRL").toUpperCase();
+  if (currency_id !== "BRL") throw new Error(`currency_id inválido: ${currency_id} (use "BRL")`);
+
+  const title = String(input.title ?? "").trim();
+  if (!title) throw new Error("title do item é obrigatório");
+
+  const id = String(input.id ?? "").trim();
+  if (!id) throw new Error("id do item é obrigatório");
+
+  const description = String(input.description ?? "").trim();
+
+  return { id, title, description, quantity, currency_id, unit_price };
 }
 
 export async function createMercadoPagoPreference(input: {
@@ -36,33 +77,48 @@ export async function createMercadoPagoPreference(input: {
   pendingUrl: string;
   idempotencyKey?: string;
 }) {
-  if (!accessToken) {
-    throw new Error("Mercado Pago não configurado");
-  }
+  if (!accessToken) throw new Error("Mercado Pago não configurado");
+
+  const item = normalizeItem(input.item);
+
+  const payload = {
+    external_reference: input.externalReference,
+    payer: input.payerEmail ? { email: input.payerEmail } : undefined,
+    notification_url: input.notificationUrl,
+    back_urls: {
+      success: input.successUrl,
+      failure: input.failureUrl,
+      pending: input.pendingUrl,
+    },
+    binary_mode: true,
+    payment_methods: {
+      installments: 12,
+    },
+    statement_descriptor: statementDescriptor.slice(0, 13),
+    items: [item],
+  };
+
+  // Debug útil: confirma que total > 0 e que não existe null em unit_price
+  console.log("MP preference payload:", {
+    external_reference: payload.external_reference,
+    item: payload.items[0],
+    total: payload.items[0].quantity * payload.items[0].unit_price,
+  });
 
   const response = await fetch(`${baseUrl}/checkout/preferences`, {
     method: "POST",
     headers: getHeaders(input.idempotencyKey),
-    body: JSON.stringify({
-      external_reference: input.externalReference,
-      payer: input.payerEmail ? { email: input.payerEmail } : undefined,
-      notification_url: input.notificationUrl,
-      back_urls: {
-        success: input.successUrl,
-        failure: input.failureUrl,
-        pending: input.pendingUrl,
-      },
-      binary_mode: true,
-      payment_methods: {
-        installments: 12,
-      },
-      statement_descriptor: statementDescriptor.slice(0, 13),
-      items: [input.item],
-    }),
+    body: JSON.stringify(payload),
   });
 
   if (!response.ok) {
     const errorBody = await response.text();
+    // log mais rico (sem vazar token)
+    console.error("MP preference failed:", {
+      status: response.status,
+      body: errorBody,
+      sentItem: item,
+    });
     throw new Error(`Mercado Pago preference failed: ${response.status} ${errorBody}`);
   }
 
@@ -74,9 +130,7 @@ export async function createMercadoPagoPreference(input: {
 }
 
 export async function fetchMercadoPagoPayment(paymentId: string) {
-  if (!accessToken) {
-    throw new Error("Mercado Pago não configurado");
-  }
+  if (!accessToken) throw new Error("Mercado Pago não configurado");
 
   const response = await fetch(`${baseUrl}/v1/payments/${paymentId}`, {
     method: "GET",
