@@ -1,11 +1,14 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import "dotenv/config";
 import authRoutes from './routes/auth.routes.js';
 import proposalsRoutes from './routes/proposals.routes.js';
 import templatesRoutes from './routes/templates.routes.js';
 import metricsRoutes from './routes/metrics.routes.js';
 import paymentsRoutes from './routes/payments.routes.js';
+import mercadoPagoRoutes from './routes/mercadopago.routes.js';
+import webhooksRoutes from './routes/webhooks.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 
 const app = express();
@@ -27,6 +30,10 @@ const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: 
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false
+}));
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
@@ -45,9 +52,9 @@ app.use(
   })
 );
 
-app.options("*", cors());
+app.options("*", cors({ origin: allowedOrigins, credentials: true }));
 
-app.use(express.json({ limit: '30kb' }));
+app.use(express.json({ limit: '20kb' }));
 app.use(sanitizeRequestBody);
 app.use('/api', apiRateLimiter);
 
@@ -60,6 +67,8 @@ app.use('/api/proposals', proposalsRoutes);
 app.use('/api/templates', templatesRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/mercadopago', mercadoPagoRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {
