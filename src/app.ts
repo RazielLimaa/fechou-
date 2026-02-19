@@ -6,6 +6,8 @@ import proposalsRoutes from './routes/proposals.routes.js';
 import templatesRoutes from './routes/templates.routes.js';
 import metricsRoutes from './routes/metrics.routes.js';
 import paymentsRoutes from './routes/payments.routes.js';
+import mercadoPagoRoutes from './routes/mercadopago.routes.js';
+import webhooksRoutes from './routes/webhooks.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 
 const app = express();
@@ -60,6 +62,8 @@ app.use('/api/proposals', proposalsRoutes);
 app.use('/api/templates', templatesRoutes);
 app.use('/api/metrics', metricsRoutes);
 app.use('/api/payments', paymentsRoutes);
+app.use('/api/mercadopago', mercadoPagoRoutes);
+app.use('/api/webhooks', webhooksRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {
