@@ -67,3 +67,23 @@ export const apiRateLimiter = rateLimit({
     message: 'Muitas requisições. Tente novamente em instantes.'
   }
 });
+
+export const sensitiveRateLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_SENSITIVE_WINDOW_MS ?? 10 * 60 * 1000),
+  max: Number(process.env.RATE_LIMIT_SENSITIVE_MAX ?? 30),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: 'Muitas tentativas em rota sensível. Tente novamente em alguns minutos.'
+  }
+});
+
+export const webhookRateLimiter = rateLimit({
+  windowMs: Number(process.env.RATE_LIMIT_WEBHOOK_WINDOW_MS ?? 60 * 1000),
+  max: Number(process.env.RATE_LIMIT_WEBHOOK_MAX ?? 120),
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    message: 'Muitas notificações recebidas temporariamente.'
+  }
+});

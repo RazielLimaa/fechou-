@@ -1,10 +1,13 @@
 import { and, count, desc, eq, sql } from 'drizzle-orm';
 import { db } from './db/index.js';
-import { paymentSessions, proposals, templates, userSubscriptions, users } from './db/schema.js';
+import { mercadoPagoAccounts, paymentSessions, payments, proposals, templates, userSubscriptions, users } from './db/schema.js';
 
 export type ProposalStatus = 'pendente' | 'vendida' | 'cancelada';
 export type PaymentSessionMode = 'payment' | 'subscription';
 export type PaymentSessionStatus = 'pending' | 'paid' | 'failed' | 'expired';
+
+export type ProposalLifecycleStatus = 'DRAFT' | 'SENT' | 'ACCEPTED' | 'PAID' | 'CANCELLED';
+export type ProposalPaymentStatus = 'PENDING' | 'CONFIRMED' | 'FAILED';
 
 export interface CreateUserInput {
   name: string;
@@ -377,6 +380,190 @@ export class Storage {
       .orderBy(desc(userSubscriptions.updatedAt));
 
     return subscription;
+  }
+
+  async getProposalByIdUnscoped(proposalId: number) {
+    const [proposal] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.id, proposalId));
+
+    return proposal;
+  }
+
+  async listProposalsByLifecycle(userId: number) {
+    return db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.userId, userId))
+      .orderBy(desc(proposals.updatedAt));
+  }
+
+  async updateProposalLifecycleStatus(userId: number, proposalId: number, lifecycleStatus: ProposalLifecycleStatus) {
+    const [proposal] = await db
+      .update(proposals)
+      .set({ lifecycleStatus, updatedAt: new Date() })
+      .where(and(eq(proposals.id, proposalId), eq(proposals.userId, userId)))
+      .returning();
+
+    return proposal;
+  }
+
+  async ensureProposalPublicHash(userId: number, proposalId: number, publicHash: string) {
+    const [proposal] = await db
+      .update(proposals)
+      .set({ publicHash, updatedAt: new Date() })
+      .where(and(eq(proposals.id, proposalId), eq(proposals.userId, userId), sql`${proposals.publicHash} is null`))
+      .returning();
+
+    return proposal;
+  }
+
+  async getMercadoPagoAccountByUserId(userId: number) {
+    const [account] = await db
+      .select()
+      .from(mercadoPagoAccounts)
+      .where(eq(mercadoPagoAccounts.userId, userId));
+
+    return account;
+  }
+
+  async upsertMercadoPagoAccount(input: {
+    userId: number;
+    mpUserId: string | null;
+    authMethod?: 'oauth' | 'api_key';
+    accessToken: string;
+    refreshToken: string;
+    expiresAt: Date;
+  }) {
+    const existing = await this.getMercadoPagoAccountByUserId(input.userId);
+
+    if (existing) {
+      const [updated] = await db
+        .update(mercadoPagoAccounts)
+        .set({
+          mpUserId: input.mpUserId,
+          authMethod: input.authMethod ?? 'oauth',
+          accessToken: input.accessToken,
+          refreshToken: input.refreshToken,
+          expiresAt: input.expiresAt,
+          updatedAt: new Date()
+        })
+        .where(eq(mercadoPagoAccounts.userId, input.userId))
+        .returning();
+
+      return updated;
+    }
+
+    const [created] = await db
+      .insert(mercadoPagoAccounts)
+      .values({
+        userId: input.userId,
+        mpUserId: input.mpUserId,
+        authMethod: input.authMethod ?? 'oauth',
+        accessToken: input.accessToken,
+        refreshToken: input.refreshToken,
+        expiresAt: input.expiresAt,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return created;
+  }
+
+  async findPaymentByProposalId(proposalId: number) {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.proposalId, proposalId));
+
+    return payment;
+  }
+
+  async upsertProposalPayment(input: {
+    proposalId: number;
+    status: ProposalPaymentStatus;
+    externalPreferenceId: string | null;
+    externalPaymentId: string | null;
+    paymentUrl: string;
+    amountCents: number;
+  }) {
+    const existing = await this.findPaymentByProposalId(input.proposalId);
+
+    if (existing) {
+      const [updated] = await db
+        .update(payments)
+        .set({
+          status: input.status,
+          externalPreferenceId: input.externalPreferenceId,
+          externalPaymentId: input.externalPaymentId,
+          paymentUrl: input.paymentUrl,
+          amountCents: input.amountCents,
+          updatedAt: new Date()
+        })
+        .where(eq(payments.proposalId, input.proposalId))
+        .returning();
+
+      return updated;
+    }
+
+    const [created] = await db
+      .insert(payments)
+      .values({
+        proposalId: input.proposalId,
+        status: input.status,
+        externalPreferenceId: input.externalPreferenceId,
+        externalPaymentId: input.externalPaymentId,
+        paymentUrl: input.paymentUrl,
+        amountCents: input.amountCents,
+        updatedAt: new Date()
+      })
+      .returning();
+
+    return created;
+  }
+
+  async findPaymentByExternalPaymentId(externalPaymentId: string) {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.externalPaymentId, externalPaymentId));
+
+    return payment;
+  }
+
+  async listPendingProposalPayments() {
+    return db
+      .select()
+      .from(payments)
+      .where(eq(payments.status, 'PENDING'))
+      .orderBy(desc(payments.updatedAt));
+  }
+
+  async findPaymentByExternalPreferenceId(externalPreferenceId: string) {
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.externalPreferenceId, externalPreferenceId));
+
+    return payment;
+  }
+
+  async markProposalPaymentConfirmed(input: {
+    proposalId: number;
+    externalPaymentId: string;
+  }) {
+    const [updatedPayment] = await db
+      .update(payments)
+      .set({
+        status: 'CONFIRMED',
+        externalPaymentId: input.externalPaymentId,
+        updatedAt: new Date()
+      })
+      .where(eq(payments.proposalId, input.proposalId))
+      .returning();
+
+    return updatedPayment;
   }
 
   async getSalesMetrics(userId: number): Promise<SalesMetrics> {

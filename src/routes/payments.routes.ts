@@ -41,10 +41,6 @@ const subscriptionCheckoutSchema = z.object({
   cancelUrl: z.string().url(),
 });
 
-const confirmSubscriptionSchema = z.object({
-  sessionId: z.string().min(10),
-});
-
 const publicMercadoPagoCheckoutSchema = z.object({
   successUrl: z.string().url(),
   failureUrl: z.string().url(),
@@ -59,25 +55,6 @@ function getRequiredIdempotencyKey(headerValue: string | undefined) {
 
 function hashSha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
-}
-
-/**
- * ✅ garante que o success_url sempre retorna com:
- * ?subscription=success&session_id={CHECKOUT_SESSION_ID}
- */
-function ensureStripeSessionIdOnSuccessUrl(successUrl: string) {
-  const u = new URL(successUrl);
-
-  if (!u.searchParams.get("subscription")) {
-    u.searchParams.set("subscription", "success");
-  }
-
-  // Stripe substitui este placeholder automaticamente
-  if (!u.searchParams.get("session_id")) {
-    u.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
-  }
-
-  return u.toString();
 }
 
 router.post("/public/:token/checkout", async (req, res) => {
@@ -107,8 +84,9 @@ router.post("/public/:token/checkout", async (req, res) => {
   }
 
   const requestIdempotency = req.header("X-Idempotency-Key")?.trim();
-  const idempotencyKey =
-    requestIdempotency && requestIdempotency.length >= 12 ? requestIdempotency : crypto.randomUUID();
+  const idempotencyKey = requestIdempotency && requestIdempotency.length >= 12
+    ? requestIdempotency
+    : crypto.randomUUID();
 
   const webhookUrl = process.env.MERCADO_PAGO_WEBHOOK_URL;
   if (!webhookUrl) {
@@ -283,6 +261,37 @@ async function createSubscriptionCheckoutSession(args: {
   });
 
   return { ok: true, session: { id: session.id, url: session.url } };
+}
+
+async function refreshSubscriptionFromStripeIfNeeded(userId: number) {
+  try {
+    const user = await storage.findUserById(userId);
+    if (!user?.stripeCustomerId) return null;
+
+    const subscriptions = await stripe.subscriptions.list({
+      customer: user.stripeCustomerId,
+      status: "all",
+      limit: 10,
+    });
+
+    const preferred = subscriptions.data.find((sub) => isActiveSubscriptionStatus(sub.status)) ?? subscriptions.data[0];
+    if (!preferred) return null;
+
+    const priceId = preferred.items.data[0]?.price?.id;
+    if (!priceId) return null;
+
+    return storage.upsertUserSubscription({
+      userId,
+      stripeSubscriptionId: preferred.id,
+      stripeCustomerId: String(preferred.customer),
+      stripePriceId: priceId,
+      status: preferred.status,
+      currentPeriodEnd: preferred.current_period_end ? new Date(preferred.current_period_end * 1000) : null,
+      cancelAtPeriodEnd: Boolean(preferred.cancel_at_period_end),
+    });
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -528,10 +537,12 @@ router.get("/me", authenticate, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const [payments, subscription] = await Promise.all([
+  const [payments, initialSubscription] = await Promise.all([
     storage.getRecentPaymentsByUser(userId),
     storage.getActiveSubscriptionByUser(userId),
   ]);
+
+  const subscription = initialSubscription ?? (await refreshSubscriptionFromStripeIfNeeded(userId));
 
   const priceId = subscription?.stripePriceId ?? null;
   const status = subscription?.status ?? null;

@@ -1,8 +1,9 @@
 import { Router } from 'express';
 import crypto from 'crypto';
 import { z } from 'zod';
-import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
+import { authenticateOrMvp, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage, type ProposalStatus } from '../storage.js';
+import { createCheckoutPreferenceWithFreelancerToken, getValidFreelancerAccessToken } from '../services/mercadoPago.js';
 
 const router = Router();
 
@@ -106,7 +107,39 @@ router.post('/public/:token/sign', async (req, res) => {
   });
 });
 
-router.use(authenticate);
+router.use(authenticateOrMvp);
+
+router.post('/:id/share-link', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
+
+  const parsedId = proposalIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) {
+    return res.status(400).json({ message: 'ID inválido.' });
+  }
+
+  const parsedBody = shareLinkSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    return res.status(400).json({ message: 'Dados inválidos.', errors: parsedBody.error.flatten() });
+  }
+
+  const proposal = await storage.getProposalById(userId, parsedId.data);
+  if (!proposal) {
+    return res.status(404).json({ message: 'Proposta não encontrada.' });
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashSha256(rawToken);
+  const expiresAt = new Date(Date.now() + parsedBody.data.expiresInHours * 60 * 60 * 1000);
+
+  await storage.setProposalShareToken(userId, parsedId.data, tokenHash, expiresAt);
+
+  return res.status(201).json({
+    shareToken: rawToken,
+    expiresAt,
+    path: `/api/proposals/public/${rawToken}`
+  });
+});
 
 router.post('/:id/share-link', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
@@ -202,6 +235,71 @@ router.get('/:id', async (req: AuthenticatedRequest, res) => {
   }
 
   return res.json(proposal);
+});
+
+
+router.post('/:id/payment-link', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
+
+  const parsedId = proposalIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) return res.status(400).json({ message: 'ID inválido.' });
+
+  const proposal = await storage.getProposalById(userId, parsedId.data);
+  if (!proposal) return res.status(404).json({ message: 'Proposta não encontrada.' });
+
+  const amountCents = Math.round(Number(proposal.value) * 100);
+  if (amountCents <= 0) {
+    return res.status(400).json({ message: 'Valor da proposta inválido.' });
+  }
+
+  if (proposal.lifecycleStatus === 'PAID' || proposal.lifecycleStatus === 'CANCELLED') {
+    return res.status(409).json({ message: 'A proposta não permite novo pagamento.' });
+  }
+
+  if (!['SENT', 'ACCEPTED'].includes(proposal.lifecycleStatus)) {
+    return res.status(409).json({ message: 'A proposta precisa estar em SENT ou ACCEPTED para gerar pagamento.' });
+  }
+
+  const existingPayment = await storage.findPaymentByProposalId(proposal.id);
+  if (existingPayment?.status === 'PENDING') {
+    return res.json({ paymentUrl: existingPayment.paymentUrl });
+  }
+
+  const freelancerAccessToken = await getValidFreelancerAccessToken(userId);
+
+  const publicHash = proposal.publicHash ?? crypto.randomBytes(18).toString('hex');
+  if (!proposal.publicHash) {
+    await storage.ensureProposalPublicHash(userId, proposal.id, publicHash);
+  }
+
+  const notificationUrl = `${process.env.APP_URL}/api/webhooks/mercadopago`;
+  const preference = await createCheckoutPreferenceWithFreelancerToken({
+    freelancerAccessToken,
+    proposalId: proposal.id,
+    title: proposal.title,
+    amountCents,
+    currency: 'BRL',
+    notificationUrl,
+    frontendPublicPath: `/p/${publicHash}`,
+  });
+
+  const paymentUrl = preference.init_point || preference.sandbox_init_point;
+
+  if (!paymentUrl) {
+    return res.status(502).json({ message: 'Mercado Pago não retornou URL de pagamento.' });
+  }
+
+  await storage.upsertProposalPayment({
+    proposalId: proposal.id,
+    status: 'PENDING',
+    externalPreferenceId: preference.id ?? null,
+    externalPaymentId: null,
+    paymentUrl,
+    amountCents,
+  });
+
+  return res.status(201).json({ paymentUrl });
 });
 
 router.patch('/:id/status', async (req: AuthenticatedRequest, res) => {
