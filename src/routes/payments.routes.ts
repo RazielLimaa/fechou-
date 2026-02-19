@@ -17,7 +17,6 @@ import {
 } from "../services/mercadoPago.js";
 import { requirePlan } from "../middleware/requirePlan.js";
 
-
 const router = Router();
 
 type PlanId = "free" | "pro" | "premium";
@@ -209,12 +208,14 @@ async function createSubscriptionCheckoutSession(args: {
 
   // garante customer
   const stripeCustomerId =
-    user.stripeCustomerId ??
-    (await stripe.customers.create({ email: user.email, name: user.name })).id;
+    user.stripeCustomerId ?? (await stripe.customers.create({ email: user.email, name: user.name })).id;
 
   if (!user.stripeCustomerId) {
     await storage.setUserStripeCustomerId(user.id, stripeCustomerId);
   }
+
+  // ✅ garante session_id no retorno
+  const safeSuccessUrl = ensureStripeSessionIdOnSuccessUrl(successUrl);
 
   const session = await stripe.checkout.sessions.create(
     {
@@ -239,7 +240,7 @@ async function createSubscriptionCheckoutSession(args: {
         priceId,
       },
 
-      success_url: successUrl,
+      success_url: safeSuccessUrl,
       cancel_url: cancelUrl,
     },
     { idempotencyKey }
@@ -447,6 +448,86 @@ router.post("/subscriptions/checkout", authenticate, async (req: AuthenticatedRe
   }
 
   return res.status(201).json({ checkoutUrl: result.session.url, sessionId: result.session.id });
+});
+
+/**
+ * ✅ CONFIRMAÇÃO PÓS-CHECKOUT (resolve "paguei e continua free")
+ * POST /subscriptions/confirm
+ * body: { sessionId }
+ */
+router.post("/subscriptions/confirm", authenticate, async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
+  const parsed = confirmSubscriptionSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
+  }
+
+  const { sessionId } = parsed.data;
+
+  // 1) Busca session
+  let session: any;
+  try {
+    session = await stripe.checkout.sessions.retrieve(sessionId);
+  } catch {
+    return res.status(404).json({ message: "Sessão do Stripe não encontrada." });
+  }
+
+  // 2) Tem que ser subscription
+  if (session.mode !== "subscription") {
+    return res.status(400).json({ message: "Sessão não é de assinatura." });
+  }
+
+  // 3) Segurança: session precisa ser do usuário logado
+  const sessionUserId = Number(session?.metadata?.userId ?? 0);
+  if (sessionUserId && sessionUserId !== userId) {
+    return res.status(403).json({ message: "Sessão não pertence ao usuário autenticado." });
+  }
+
+  const stripeSubscriptionId =
+    typeof session.subscription === "string"
+      ? session.subscription
+      : typeof session.subscription === "object" && session.subscription
+        ? session.subscription.id
+        : null;
+
+  const stripeCustomerId = typeof session.customer === "string" ? session.customer : null;
+
+  if (!stripeSubscriptionId || !stripeCustomerId) {
+    return res.status(409).json({
+      message: "Assinatura ainda não está disponível. Tente novamente em instantes.",
+    });
+  }
+
+  // 4) Busca subscription e salva no DB
+  const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
+  const priceId = subscription.items.data[0]?.price?.id;
+
+  if (!priceId) {
+    return res.status(500).json({ message: "Não foi possível identificar o priceId da assinatura." });
+  }
+
+  await storage.upsertUserSubscription({
+    userId,
+    stripeSubscriptionId,
+    stripeCustomerId,
+    stripePriceId: priceId,
+    status: subscription.status,
+    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
+    cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
+  });
+
+  // opcional: marca payment session como paid (não quebra se falhar)
+  try {
+    await storage.markPaymentSessionStatus(sessionId, "paid");
+  } catch {
+    // ignore
+  }
+
+  const planId: PlanId = isActiveSubscriptionStatus(subscription.status) ? planFromPriceId(priceId) : "free";
+
+  return res.json({ ok: true, planId });
 });
 
 /**

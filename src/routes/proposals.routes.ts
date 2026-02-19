@@ -141,6 +141,38 @@ router.post('/:id/share-link', async (req: AuthenticatedRequest, res) => {
   });
 });
 
+router.post('/:id/share-link', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
+
+  const parsedId = proposalIdSchema.safeParse(req.params.id);
+  if (!parsedId.success) {
+    return res.status(400).json({ message: 'ID inválido.' });
+  }
+
+  const parsedBody = shareLinkSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    return res.status(400).json({ message: 'Dados inválidos.', errors: parsedBody.error.flatten() });
+  }
+
+  const proposal = await storage.getProposalById(userId, parsedId.data);
+  if (!proposal) {
+    return res.status(404).json({ message: 'Proposta não encontrada.' });
+  }
+
+  const rawToken = crypto.randomBytes(32).toString('hex');
+  const tokenHash = hashSha256(rawToken);
+  const expiresAt = new Date(Date.now() + parsedBody.data.expiresInHours * 60 * 60 * 1000);
+
+  await storage.setProposalShareToken(userId, parsedId.data, tokenHash, expiresAt);
+
+  return res.status(201).json({
+    shareToken: rawToken,
+    expiresAt,
+    path: `/api/proposals/public/${rawToken}`
+  });
+});
+
 router.post('/', async (req: AuthenticatedRequest, res) => {
   const parsed = createProposalSchema.safeParse(req.body);
 
