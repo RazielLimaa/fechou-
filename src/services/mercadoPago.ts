@@ -243,6 +243,76 @@ export async function fetchPaymentById(input: { accessToken: string; paymentId: 
   }>;
 }
 
+// Compatibilidade com chamadas antigas em payments.routes.ts
+export async function createMercadoPagoPreference(input: {
+  externalReference: string;
+  payerEmail?: string;
+  notificationUrl: string;
+  successUrl: string;
+  failureUrl: string;
+  pendingUrl: string;
+  idempotencyKey?: string;
+  item: {
+    id: string;
+    title: string;
+    description: string;
+    quantity: number;
+    currency_id: 'BRL';
+    unit_price: number;
+  };
+}) {
+  const accessToken = process.env.MP_PLATFORM_ACCESS_TOKEN;
+  if (!accessToken) {
+    throw new Error('MP_PLATFORM_ACCESS_TOKEN não definido para checkout público legado.');
+  }
+
+  const response = await fetch(`${mpApiBaseUrl}/checkout/preferences`, {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      ...(input.idempotencyKey ? { 'X-Idempotency-Key': input.idempotencyKey } : {}),
+    },
+    body: JSON.stringify({
+      external_reference: input.externalReference,
+      payer: input.payerEmail ? { email: input.payerEmail } : undefined,
+      notification_url: input.notificationUrl,
+      back_urls: {
+        success: input.successUrl,
+        failure: input.failureUrl,
+        pending: input.pendingUrl,
+      },
+      binary_mode: true,
+      items: [input.item],
+    }),
+  });
+
+  if (!response.ok) {
+    const errorBody = await response.text();
+    throw new Error(`Falha ao criar preferência MP (legado): ${response.status} ${errorBody}`);
+  }
+
+  return response.json() as Promise<{
+    id: string;
+    init_point: string;
+    sandbox_init_point?: string;
+  }>;
+}
+
+export async function fetchMercadoPagoPayment(paymentId: string) {
+  const accessToken = process.env.MP_PLATFORM_ACCESS_TOKEN;
+  if (!accessToken) {
+    throw new Error('MP_PLATFORM_ACCESS_TOKEN não definido para webhook legado.');
+  }
+
+  const payment = await fetchPaymentById({ accessToken, paymentId });
+  return {
+    id: payment.id,
+    status: payment.status,
+    external_reference: payment.external_reference,
+  };
+}
+
 export function verifyMercadoPagoWebhookSignature(input: {
   xSignature?: string;
   xRequestId?: string;

@@ -41,6 +41,22 @@ const subscriptionCheckoutSchema = z.object({
   cancelUrl: z.string().url(),
 });
 
+const confirmSubscriptionSchema = z.object({
+  sessionId: z.string().trim().min(8),
+});
+
+function ensureStripeSessionIdOnSuccessUrl(successUrl: string) {
+  try {
+    const parsed = new URL(successUrl);
+    if (!parsed.searchParams.get("session_id")) {
+      parsed.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
+    }
+    return parsed.toString();
+  } catch {
+    return successUrl;
+  }
+}
+
 const publicMercadoPagoCheckoutSchema = z.object({
   successUrl: z.string().url(),
   failureUrl: z.string().url(),
@@ -240,7 +256,7 @@ async function createSubscriptionCheckoutSession(args: {
         priceId,
       },
 
-      success_url: safeSuccessUrl,
+      success_url: ensureStripeSessionIdOnSuccessUrl(successUrl),
       cancel_url: cancelUrl,
     },
     { idempotencyKey }
