@@ -1,5 +1,6 @@
 import express from 'express';
 import cors from 'cors';
+import helmet from 'helmet';
 import "dotenv/config";
 import authRoutes from './routes/auth.routes.js';
 import proposalsRoutes from './routes/proposals.routes.js';
@@ -29,6 +30,10 @@ const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: 
 
 app.disable('x-powered-by');
 app.set('trust proxy', 1);
+app.use(helmet({
+  crossOriginEmbedderPolicy: false,
+  contentSecurityPolicy: false
+}));
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
@@ -47,9 +52,9 @@ app.use(
   })
 );
 
-app.options("*", cors());
+app.options("*", cors({ origin: allowedOrigins, credentials: true }));
 
-app.use(express.json({ limit: '30kb' }));
+app.use(express.json({ limit: '20kb' }));
 app.use(sanitizeRequestBody);
 app.use('/api', apiRateLimiter);
 

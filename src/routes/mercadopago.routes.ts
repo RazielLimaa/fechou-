@@ -12,8 +12,10 @@ import {
 } from '../services/mercadoPago.js';
 import { storage } from '../storage.js';
 import { z } from 'zod';
+import { sensitiveRateLimiter } from '../middleware/security.js';
 
 const router = Router();
+router.use(sensitiveRateLimiter);
 
 const oauthStateStore = new Map<string, { userId: number; expiresAt: number }>();
 const STATE_TTL_MS = 10 * 60 * 1000;

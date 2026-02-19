@@ -10,6 +10,7 @@ const appUrl = process.env.APP_URL;
 const frontendUrl = process.env.FRONTEND_URL;
 const redirectUri = process.env.MP_REDIRECT_URI ?? (appUrl ? `${appUrl}/api/mercadopago/callback` : undefined);
 const tokensEncryptionKey = process.env.TOKENS_ENCRYPTION_KEY;
+const webhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
 
 if (!clientId || !clientSecret || !redirectUri) {
   console.warn('Mercado Pago OAuth não totalmente configurado (MP_CLIENT_ID, MP_CLIENT_SECRET, MP_REDIRECT_URI).');
@@ -240,4 +241,32 @@ export async function fetchPaymentById(input: { accessToken: string; paymentId: 
     external_reference: string | null;
     order?: { id?: string | null };
   }>;
+}
+
+export function verifyMercadoPagoWebhookSignature(input: {
+  xSignature?: string;
+  xRequestId?: string;
+  dataId?: string;
+}) {
+  if (!webhookSecret) return true;
+  if (!input.xSignature || !input.xRequestId || !input.dataId) return false;
+
+  const chunks = input.xSignature.split(',').reduce<Record<string, string>>((acc, part) => {
+    const [k, v] = part.trim().split('=');
+    if (k && v) acc[k] = v;
+    return acc;
+  }, {});
+
+  const ts = chunks.ts;
+  const providedV1 = chunks.v1;
+  if (!ts || !providedV1) return false;
+
+  const manifest = `id:${input.dataId};request-id:${input.xRequestId};ts:${ts};`;
+  const expected = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
+
+  const providedBuffer = Buffer.from(providedV1, 'hex');
+  const expectedBuffer = Buffer.from(expected, 'hex');
+  if (providedBuffer.length !== expectedBuffer.length) return false;
+
+  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
 }
