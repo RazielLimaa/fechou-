@@ -55,6 +55,14 @@ Base URL: `http://localhost:3001/api`
 ### Metrics
 - `GET /metrics/sales`
 - `GET /metrics/premium-dashboard?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/kpis?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/charts?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/health?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/insights?period=monthly|weekly&limit=6`
+- `GET /metrics/premium-dashboard/actions?period=monthly|weekly&limit=5`
+- `GET /metrics/premium-dashboard/pending-reasons?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/pending-ranked?period=monthly|weekly&limit=8`
+- `GET /metrics/premium-dashboard/executive-summary?period=monthly|weekly`
 - `GET /metrics/premium-dashboard/export.csv`
 - Estrutura completa da página conectada: `docs/premium-dashboard-page-structure.md`
 

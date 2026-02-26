@@ -1,164 +1,134 @@
-# Estrutura completa da página Premium Dashboard (endpoints conectados)
+# Estrutura completa da página Premium Dashboard (todos endpoints conectados)
 
-Este guia mostra **como conectar a página completa** sem mudar o layout visual, usando os endpoints já criados no backend.
+Abaixo está a estrutura para ligar **cada bloco/função** da página aos endpoints novos, sem alterar layout.
 
-## 1) Endpoints que a página usa
+## Endpoints disponíveis
 
-Base URL: `/api`
+Base: `/api/metrics`
 
-- `GET /metrics/premium-dashboard?period=monthly|weekly`
-  - Fonte principal da página (KPIs, gráficos, insights, ações e ranking).
-- `GET /metrics/premium-dashboard/export.csv`
-  - Download do CSV Power BI (substitui geração de CSV no frontend).
-- `GET /auth/me`
-  - Opcional para validar sessão/logado.
-- `GET /proposals`
-  - Opcional se você quiser dados brutos para debug/telas auxiliares.
+1. `GET /premium-dashboard?period=monthly|weekly` (payload completo)
+2. `GET /premium-dashboard/kpis?period=monthly|weekly`
+3. `GET /premium-dashboard/charts?period=monthly|weekly`
+4. `GET /premium-dashboard/health?period=monthly|weekly`
+5. `GET /premium-dashboard/insights?period=monthly|weekly&limit=6`
+6. `GET /premium-dashboard/actions?period=monthly|weekly&limit=5`
+7. `GET /premium-dashboard/pending-reasons?period=monthly|weekly`
+8. `GET /premium-dashboard/pending-ranked?period=monthly|weekly&limit=8`
+9. `GET /premium-dashboard/executive-summary?period=monthly|weekly`
+10. `GET /premium-dashboard/export.csv`
 
-## 2) Contrato de resposta esperado para o dashboard
+## Conexão por função da página
 
-O endpoint `GET /metrics/premium-dashboard` retorna:
+- Toggle mensal/semanal: muda `period` em todas as queries.
+- KPI Cards: endpoint `kpis`.
+- Gráfico barras + sparkline + trend: endpoint `charts`.
+- Health score + aging + vendidas 30d: endpoint `health`.
+- Cards de insights: endpoint `insights`.
+- Next actions: endpoint `actions`.
+- Pizza motivos: endpoint `pending-reasons`.
+- Lista pendências prioritárias + maior pendência: endpoint `pending-ranked`.
+- Resumo executivo (risco/conversão/pendente/ticket): endpoint `executive-summary`.
+- Botão exportar: endpoint `export.csv`.
 
-- `period`
-- `generatedAt`
-- `soldCount`
-- `pendingCount`
-- `canceledCount`
-- `totalValue`
-- `pendingValue`
-- `avgTicket`
-- `conversionRatePct`
-- `chartData[]`
-- `revenueSpark[]`
-- `pendingReasons[]`
-- `pendingRanked[]`
-- `trend`
-- `health`
-- `insights[]`
-- `actions[]`
-- `pendingAgingAvg`
-- `recentSoldCount`
-- `biggestPending`
+## Exemplo de camada de API (frontend)
 
-## 3) Estrutura da página React (wire-up completo)
+```ts
+export type PeriodType = "monthly" | "weekly";
 
-> Abaixo está um exemplo de integração mantendo o layout e trocando apenas a fonte de dados local por API.
+const qs = (obj: Record<string, string | number | undefined>) => {
+  const url = new URLSearchParams();
+  Object.entries(obj).forEach(([k, v]) => {
+    if (v !== undefined && v !== null) url.set(k, String(v));
+  });
+  return url.toString();
+};
 
-```tsx
-import { useMemo, useState } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { toast } from "sonner";
-
-type PeriodType = "monthly" | "weekly";
-
-async function getPremiumDashboard(period: PeriodType) {
-  const res = await fetch(`/api/metrics/premium-dashboard?period=${period}`, {
+async function get<T>(path: string) {
+  const res = await fetch(`/api/metrics${path}`, {
     credentials: "include",
     headers: { "Content-Type": "application/json" },
   });
 
   if (!res.ok) {
     const body = await res.json().catch(() => ({}));
-    throw new Error(body?.message || "Falha ao carregar dashboard premium");
+    throw new Error(body?.message || "Falha ao buscar métricas premium");
   }
 
-  return res.json();
+  return (await res.json()) as T;
 }
 
-export default function PremiumDashboardPage() {
-  const [viewMode, setViewMode] = useState<PeriodType>("monthly");
-
-  const { data, isLoading, isFetching, refetch } = useQuery({
-    queryKey: ["premium-dashboard", viewMode],
-    queryFn: () => getPremiumDashboard(viewMode),
-  });
-
-  const exportToExcel = () => {
-    const url = "/api/metrics/premium-dashboard/export.csv";
-
-    // opção 1: abrir direto
-    window.open(url, "_blank", "noopener,noreferrer");
-
-    // opção 2 (se quiser controlar erros): fetch + blob
-    // (mantido comentado para não alterar UX atual)
-  };
-
-  const stats = useMemo(() => {
-    return {
-      soldCount: data?.soldCount ?? 0,
-      pendingCount: data?.pendingCount ?? 0,
-      canceledCount: data?.canceledCount ?? 0,
-      totalValue: data?.totalValue ?? 0,
-      pendingValue: data?.pendingValue ?? 0,
-      avgTicket: data?.avgTicket ?? 0,
-      conversionRatePct: data?.conversionRatePct ?? 0,
-      chartData: data?.chartData ?? [],
-      pendingReasons: data?.pendingReasons ?? [],
-      pendingRanked: data?.pendingRanked ?? [],
-      trend: data?.trend ?? { lastPeriodSold: 0, prevPeriodSold: 0 },
-      revenueSpark: data?.revenueSpark ?? [],
-    };
-  }, [data]);
-
-  const premium = useMemo(() => {
-    return {
-      health: data?.health ?? { score: 0, reasons: [] },
-      insights: data?.insights ?? [],
-      actions: data?.actions ?? [],
-      pendingAgingAvg: data?.pendingAgingAvg ?? 0,
-      recentSoldCount: data?.recentSoldCount ?? 0,
-      biggestPending: data?.biggestPending,
-    };
-  }, [data]);
-
-  if (isLoading) {
-    return <div>Carregando...</div>;
-  }
-
-  return (
-    <>
-      {/* Seu layout atual permanece igual */}
-      {/* Toggle mensal/semanal */}
-      <button onClick={() => setViewMode("monthly")}>Mensal</button>
-      <button onClick={() => setViewMode("weekly")}>Semanal</button>
-
-      {/* Export */}
-      <button onClick={exportToExcel}>Exportar Power BI</button>
-
-      {/* Usa stats e premium exatamente como seu layout já usa hoje */}
-      <pre>{JSON.stringify({ stats, premium, isFetching }, null, 2)}</pre>
-      <button onClick={() => refetch().then(() => toast.success("Dados atualizados"))}>
-        Atualizar dados
-      </button>
-    </>
-  );
-}
+export const metricsApi = {
+  full: (period: PeriodType) => get(`/premium-dashboard?${qs({ period })}`),
+  kpis: (period: PeriodType) => get(`/premium-dashboard/kpis?${qs({ period })}`),
+  charts: (period: PeriodType) => get(`/premium-dashboard/charts?${qs({ period })}`),
+  health: (period: PeriodType) => get(`/premium-dashboard/health?${qs({ period })}`),
+  insights: (period: PeriodType, limit = 6) => get(`/premium-dashboard/insights?${qs({ period, limit })}`),
+  actions: (period: PeriodType, limit = 5) => get(`/premium-dashboard/actions?${qs({ period, limit })}`),
+  pendingReasons: (period: PeriodType) => get(`/premium-dashboard/pending-reasons?${qs({ period })}`),
+  pendingRanked: (period: PeriodType, limit = 8) => get(`/premium-dashboard/pending-ranked?${qs({ period, limit })}`),
+  executiveSummary: (period: PeriodType) => get(`/premium-dashboard/executive-summary?${qs({ period })}`),
+  exportCsvUrl: () => "/api/metrics/premium-dashboard/export.csv",
+};
 ```
 
-## 4) Mapeamento por bloco visual da página
+## Exemplo de página (layout igual, só trocando fonte de dados)
 
-- Header + Toggle período
-  - usa `viewMode` e refetch automático do query key.
-- KPIs (cards)
-  - `soldCount`, `pendingCount`, `totalValue`, `avgTicket`, `conversionRatePct`, `pendingValue`.
-- Gráfico de barras e sparkline
-  - `chartData`, `revenueSpark`.
-- Pizza de motivos
-  - `pendingReasons`.
-- Health Score
-  - `health.score`, `health.reasons`, `pendingAgingAvg`, `recentSoldCount`.
-- Insights
-  - `insights[]`.
-- Next Actions
-  - `actions[]`.
-- Top pendências
-  - `pendingRanked[]`, `biggestPending`.
-- Export botão
-  - `GET /metrics/premium-dashboard/export.csv`.
+```tsx
+const [viewMode, setViewMode] = useState<PeriodType>("monthly");
 
-## 5) Checklist de conexão final
+const kpisQ = useQuery({ queryKey: ["premium-kpis", viewMode], queryFn: () => metricsApi.kpis(viewMode) });
+const chartsQ = useQuery({ queryKey: ["premium-charts", viewMode], queryFn: () => metricsApi.charts(viewMode) });
+const healthQ = useQuery({ queryKey: ["premium-health", viewMode], queryFn: () => metricsApi.health(viewMode) });
+const insightsQ = useQuery({ queryKey: ["premium-insights", viewMode], queryFn: () => metricsApi.insights(viewMode, 6) });
+const actionsQ = useQuery({ queryKey: ["premium-actions", viewMode], queryFn: () => metricsApi.actions(viewMode, 5) });
+const reasonsQ = useQuery({ queryKey: ["premium-reasons", viewMode], queryFn: () => metricsApi.pendingReasons(viewMode) });
+const rankedQ = useQuery({ queryKey: ["premium-ranked", viewMode], queryFn: () => metricsApi.pendingRanked(viewMode, 8) });
+const execQ = useQuery({ queryKey: ["premium-exec", viewMode], queryFn: () => metricsApi.executiveSummary(viewMode) });
 
-1. Trocar o cálculo local pesado por `useQuery(["premium-dashboard", period])`.
-2. Usar os campos da resposta para preencher os mesmos componentes visuais.
-3. Trocar função local de exportação por download de `/api/metrics/premium-dashboard/export.csv`.
-4. Manter tratamento de erro (`401`, `400`, `500`) via toast/mensagem de fallback.
+const isLoading =
+  kpisQ.isLoading || chartsQ.isLoading || healthQ.isLoading || insightsQ.isLoading ||
+  actionsQ.isLoading || reasonsQ.isLoading || rankedQ.isLoading || execQ.isLoading;
+
+const stats = {
+  soldCount: kpisQ.data?.soldCount ?? 0,
+  pendingCount: kpisQ.data?.pendingCount ?? 0,
+  canceledCount: kpisQ.data?.canceledCount ?? 0,
+  totalValue: kpisQ.data?.totalValue ?? 0,
+  pendingValue: kpisQ.data?.pendingValue ?? 0,
+  avgTicket: kpisQ.data?.avgTicket ?? 0,
+  conversionRatePct: kpisQ.data?.conversionRatePct ?? 0,
+  chartData: chartsQ.data?.chartData ?? [],
+  revenueSpark: chartsQ.data?.revenueSpark ?? [],
+  trend: chartsQ.data?.trend ?? { lastPeriodSold: 0, prevPeriodSold: 0 },
+  pendingReasons: reasonsQ.data?.pendingReasons ?? [],
+  pendingRanked: rankedQ.data?.pendingRanked ?? [],
+};
+
+const premium = {
+  health: healthQ.data?.health ?? { score: 0, reasons: [] },
+  pendingAgingAvg: healthQ.data?.pendingAgingAvg ?? 0,
+  recentSoldCount: healthQ.data?.recentSoldCount ?? 0,
+  insights: insightsQ.data?.insights ?? [],
+  actions: actionsQ.data?.actions ?? [],
+  biggestPending: rankedQ.data?.biggestPending,
+};
+
+const executive = {
+  conversionRatePct: execQ.data?.conversionRatePct ?? 0,
+  pendingValue: execQ.data?.pendingValue ?? 0,
+  avgTicket: execQ.data?.avgTicket ?? 0,
+  risk: execQ.data?.risk ?? "Baixo",
+};
+
+const exportToExcel = () => {
+  window.open(metricsApi.exportCsvUrl(), "_blank", "noopener,noreferrer");
+};
+```
+
+## Segurança aplicada nos endpoints
+
+- Todos são autenticados (`router.use(authenticate)`).
+- Validação estrita de query params com `zod` (`period`, `limit`).
+- `limit` com limites máximos para evitar abuso de payload.
+- Dados sempre escopados ao `userId` autenticado.
+- CSV retornado com `Content-Type` e `Content-Disposition` corretos.
