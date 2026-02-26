@@ -10,6 +10,7 @@ import paymentsRoutes from './routes/payments.routes.js';
 import mercadoPagoRoutes from './routes/mercadopago.routes.js';
 import webhooksRoutes from './routes/webhooks.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
+import userRoutes from "./routes/user.routes.js";
 
 const app = express();
 const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
@@ -37,9 +38,9 @@ app.use(helmet({
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
-  .split(",")
-  .map((s) => s.trim())
-  .filter(Boolean);
+.split(",")
+.map((s) => s.trim())
+.filter(Boolean);
 
 app.use(
   cors({
@@ -69,6 +70,7 @@ app.use('/api/metrics', metricsRoutes);
 app.use('/api/payments', paymentsRoutes);
 app.use('/api/mercadopago', mercadoPagoRoutes);
 app.use('/api/webhooks', webhooksRoutes);
+app.use("/api/user", userRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {

@@ -1,13 +1,22 @@
-import { and, count, desc, eq, sql } from 'drizzle-orm';
-import { db } from './db/index.js';
-import { mercadoPagoAccounts, paymentSessions, payments, proposals, templates, userSubscriptions, users } from './db/schema.js';
+import { and, count, desc, eq, sql } from "drizzle-orm";
+import { db } from "./db/index.js";
+import {
+  mercadoPagoAccounts,
+  paymentSessions,
+  payments,
+  proposals,
+  templates,
+  userSubscriptions,
+  users,
+} from "./db/schema.js";
 
-export type ProposalStatus = 'pendente' | 'vendida' | 'cancelada';
-export type PaymentSessionMode = 'payment' | 'subscription';
-export type PaymentSessionStatus = 'pending' | 'paid' | 'failed' | 'expired';
+export type ProposalStatus = "pendente" | "vendida" | "cancelada";
+export type PaymentSessionMode = "payment" | "subscription";
+export type PaymentSessionStatus = "pending" | "paid" | "failed" | "expired";
 
-export type ProposalLifecycleStatus = 'DRAFT' | 'SENT' | 'ACCEPTED' | 'PAID' | 'CANCELLED';
-export type ProposalPaymentStatus = 'PENDING' | 'CONFIRMED' | 'FAILED';
+export type ProposalLifecycleStatus = "DRAFT" | "SENT" | "ACCEPTED" | "PAID" | "CANCELLED";
+export type ProposalPaymentStatus = "PENDING" | "CONFIRMED" | "FAILED";
+
 
 export interface CreateUserInput {
   name: string;
@@ -53,7 +62,7 @@ export class Storage {
         id: users.id,
         name: users.name,
         email: users.email,
-        createdAt: users.createdAt
+        createdAt: users.createdAt,
       });
 
     return user;
@@ -64,6 +73,10 @@ export class Storage {
     return user;
   }
 
+  /**
+   * ✅ FIX: incluir pixKey e pixKeyType no SELECT
+   * Motivo: endpoints que usam getUserById/findUserById (ex: /pix-key) precisam desses campos.
+   */
   async findUserById(id: number) {
     const [user] = await db
       .select({
@@ -72,12 +85,18 @@ export class Storage {
         email: users.email,
         stripeCustomerId: users.stripeCustomerId,
         stripeConnectAccountId: users.stripeConnectAccountId,
-        createdAt: users.createdAt
+        pixKey: users.pixKey,
+        pixKeyType: users.pixKeyType,
+        createdAt: users.createdAt,
       })
       .from(users)
       .where(eq(users.id, id));
 
     return user;
+  }
+
+  async getUserById(id: number) {
+    return this.findUserById(id);
   }
 
   async setUserStripeCustomerId(userId: number, stripeCustomerId: string) {
@@ -104,12 +123,10 @@ export class Storage {
         .orderBy(desc(proposals.createdAt));
     }
 
-    return db
-      .select()
-      .from(proposals)
-      .where(eq(proposals.userId, userId))
-      .orderBy(desc(proposals.createdAt));
+    return db.select().from(proposals).where(eq(proposals.userId, userId)).orderBy(desc(proposals.createdAt));
   }
+
+  
 
   async getProposalById(userId: number, proposalId: number) {
     const [proposal] = await db
@@ -121,11 +138,7 @@ export class Storage {
   }
 
   async getProposalByShareTokenHash(shareTokenHash: string) {
-    const [proposal] = await db
-      .select()
-      .from(proposals)
-      .where(eq(proposals.shareTokenHash, shareTokenHash));
-
+    const [proposal] = await db.select().from(proposals).where(eq(proposals.shareTokenHash, shareTokenHash));
     return proposal;
   }
 
@@ -135,7 +148,7 @@ export class Storage {
       .set({
         shareTokenHash,
         shareTokenExpiresAt: expiresAt,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .where(and(eq(proposals.id, proposalId), eq(proposals.userId, userId)))
       .returning();
@@ -151,7 +164,7 @@ export class Storage {
         contractSignerName: signerName,
         contractSignatureHash: signatureHash,
         paymentReleasedAt: new Date(),
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .where(eq(proposals.shareTokenHash, shareTokenHash))
       .returning();
@@ -160,22 +173,27 @@ export class Storage {
   }
 
   async updateProposalStatus(userId: number, proposalId: number, status: ProposalStatus) {
-    const payload: { status: ProposalStatus; acceptedAt?: Date | null; cancelledAt?: Date | null; updatedAt: Date } = {
+    const payload: {
+      status: ProposalStatus;
+      acceptedAt?: Date | null;
+      cancelledAt?: Date | null;
+      updatedAt: Date;
+    } = {
       status,
-      updatedAt: new Date()
+      updatedAt: new Date(),
     };
 
-    if (status === 'vendida') {
+    if (status === "vendida") {
       payload.acceptedAt = new Date();
       payload.cancelledAt = null;
     }
 
-    if (status === 'cancelada') {
+    if (status === "cancelada") {
       payload.cancelledAt = new Date();
       payload.acceptedAt = null;
     }
 
-    if (status === 'pendente') {
+    if (status === "pendente") {
       payload.acceptedAt = null;
       payload.cancelledAt = null;
     }
@@ -224,9 +242,9 @@ export class Storage {
         mercadoPagoPaymentId: input.mercadoPagoPaymentId,
         amount: input.amount,
         currency: input.currency,
-        status: 'pending',
+        status: "pending",
         metadata: input.metadata ?? {},
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .returning();
 
@@ -237,7 +255,6 @@ export class Storage {
     const [session] = await db.select().from(paymentSessions).where(eq(paymentSessions.stripeSessionId, stripeSessionId));
     return session;
   }
-
 
   async findPaymentSessionByPaymentIntentId(stripePaymentIntentId: string) {
     const [session] = await db
@@ -312,7 +329,7 @@ export class Storage {
         status: paymentSessions.status,
         amount: paymentSessions.amount,
         currency: paymentSessions.currency,
-        createdAt: paymentSessions.createdAt
+        createdAt: paymentSessions.createdAt,
       })
       .from(paymentSessions)
       .where(eq(paymentSessions.userId, userId))
@@ -338,7 +355,7 @@ export class Storage {
           status: input.status,
           currentPeriodEnd: input.currentPeriodEnd,
           cancelAtPeriodEnd: input.cancelAtPeriodEnd,
-          updatedAt: new Date()
+          updatedAt: new Date(),
         })
         .where(eq(userSubscriptions.stripeSubscriptionId, input.stripeSubscriptionId))
         .returning();
@@ -356,7 +373,7 @@ export class Storage {
         status: input.status,
         currentPeriodEnd: input.currentPeriodEnd,
         cancelAtPeriodEnd: input.cancelAtPeriodEnd,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .returning();
 
@@ -376,27 +393,19 @@ export class Storage {
     const [subscription] = await db
       .select()
       .from(userSubscriptions)
-      .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, 'active')))
+      .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, "active")))
       .orderBy(desc(userSubscriptions.updatedAt));
 
     return subscription;
   }
 
   async getProposalByIdUnscoped(proposalId: number) {
-    const [proposal] = await db
-      .select()
-      .from(proposals)
-      .where(eq(proposals.id, proposalId));
-
+    const [proposal] = await db.select().from(proposals).where(eq(proposals.id, proposalId));
     return proposal;
   }
 
   async listProposalsByLifecycle(userId: number) {
-    return db
-      .select()
-      .from(proposals)
-      .where(eq(proposals.userId, userId))
-      .orderBy(desc(proposals.updatedAt));
+    return db.select().from(proposals).where(eq(proposals.userId, userId)).orderBy(desc(proposals.updatedAt));
   }
 
   async updateProposalLifecycleStatus(userId: number, proposalId: number, lifecycleStatus: ProposalLifecycleStatus) {
@@ -420,18 +429,14 @@ export class Storage {
   }
 
   async getMercadoPagoAccountByUserId(userId: number) {
-    const [account] = await db
-      .select()
-      .from(mercadoPagoAccounts)
-      .where(eq(mercadoPagoAccounts.userId, userId));
-
+    const [account] = await db.select().from(mercadoPagoAccounts).where(eq(mercadoPagoAccounts.userId, userId));
     return account;
   }
 
   async upsertMercadoPagoAccount(input: {
     userId: number;
     mpUserId: string | null;
-    authMethod?: 'oauth' | 'api_key';
+    authMethod?: "oauth" | "api_key";
     accessToken: string;
     refreshToken: string;
     expiresAt: Date;
@@ -443,11 +448,11 @@ export class Storage {
         .update(mercadoPagoAccounts)
         .set({
           mpUserId: input.mpUserId,
-          authMethod: input.authMethod ?? 'oauth',
+          authMethod: input.authMethod ?? "oauth",
           accessToken: input.accessToken,
           refreshToken: input.refreshToken,
           expiresAt: input.expiresAt,
-          updatedAt: new Date()
+          updatedAt: new Date(),
         })
         .where(eq(mercadoPagoAccounts.userId, input.userId))
         .returning();
@@ -460,11 +465,11 @@ export class Storage {
       .values({
         userId: input.userId,
         mpUserId: input.mpUserId,
-        authMethod: input.authMethod ?? 'oauth',
+        authMethod: input.authMethod ?? "oauth",
         accessToken: input.accessToken,
         refreshToken: input.refreshToken,
         expiresAt: input.expiresAt,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .returning();
 
@@ -472,11 +477,7 @@ export class Storage {
   }
 
   async findPaymentByProposalId(proposalId: number) {
-    const [payment] = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.proposalId, proposalId));
-
+    const [payment] = await db.select().from(payments).where(eq(payments.proposalId, proposalId));
     return payment;
   }
 
@@ -499,7 +500,7 @@ export class Storage {
           externalPaymentId: input.externalPaymentId,
           paymentUrl: input.paymentUrl,
           amountCents: input.amountCents,
-          updatedAt: new Date()
+          updatedAt: new Date(),
         })
         .where(eq(payments.proposalId, input.proposalId))
         .returning();
@@ -516,7 +517,7 @@ export class Storage {
         externalPaymentId: input.externalPaymentId,
         paymentUrl: input.paymentUrl,
         amountCents: input.amountCents,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .returning();
 
@@ -524,41 +525,55 @@ export class Storage {
   }
 
   async findPaymentByExternalPaymentId(externalPaymentId: string) {
-    const [payment] = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.externalPaymentId, externalPaymentId));
-
+    const [payment] = await db.select().from(payments).where(eq(payments.externalPaymentId, externalPaymentId));
     return payment;
   }
 
   async listPendingProposalPayments() {
-    return db
-      .select()
-      .from(payments)
-      .where(eq(payments.status, 'PENDING'))
-      .orderBy(desc(payments.updatedAt));
+    return db.select().from(payments).where(eq(payments.status, "PENDING")).orderBy(desc(payments.updatedAt));
+  }
+
+  /**
+   * (Agora é redundante, mas pode manter)
+   */
+  async getUserByIdForPix(userId: number) {
+    const [user] = await db
+      .select({
+        id: users.id,
+        pixKey: users.pixKey,
+        pixKeyType: users.pixKeyType,
+      })
+      .from(users)
+      .where(eq(users.id, userId));
+
+    return user;
+  }
+
+  async updateUserPixKey(userId: number, pixKey: string | null, pixKeyType: string | null) {
+    const [updated] = await db
+      .update(users)
+      .set({ pixKey, pixKeyType })
+      .where(eq(users.id, userId))
+      .returning({
+        pixKey: users.pixKey,
+        pixKeyType: users.pixKeyType,
+      });
+
+    return updated;
   }
 
   async findPaymentByExternalPreferenceId(externalPreferenceId: string) {
-    const [payment] = await db
-      .select()
-      .from(payments)
-      .where(eq(payments.externalPreferenceId, externalPreferenceId));
-
+    const [payment] = await db.select().from(payments).where(eq(payments.externalPreferenceId, externalPreferenceId));
     return payment;
   }
 
-  async markProposalPaymentConfirmed(input: {
-    proposalId: number;
-    externalPaymentId: string;
-  }) {
+  async markProposalPaymentConfirmed(input: { proposalId: number; externalPaymentId: string }) {
     const [updatedPayment] = await db
       .update(payments)
       .set({
-        status: 'CONFIRMED',
+        status: "CONFIRMED",
         externalPaymentId: input.externalPaymentId,
-        updatedAt: new Date()
+        updatedAt: new Date(),
       })
       .where(eq(payments.proposalId, input.proposalId))
       .returning();
@@ -571,7 +586,7 @@ export class Storage {
       .select({
         totalProposals: count(proposals.id),
         totalRevenue: sql<string>`coalesce(sum(case when ${proposals.status} = 'vendida' then ${proposals.value} else 0 end), 0)`,
-        totalSales: sql<number>`coalesce(sum(case when ${proposals.status} = 'vendida' then 1 else 0 end), 0)`
+        totalSales: sql<number>`coalesce(sum(case when ${proposals.status} = 'vendida' then 1 else 0 end), 0)`,
       })
       .from(proposals)
       .where(eq(proposals.userId, userId));
@@ -581,11 +596,13 @@ export class Storage {
     const totalRevenue = Number(totals.totalRevenue ?? 0);
     const conversionRate = totalProposals === 0 ? 0 : Number(((totalSales / totalProposals) * 100).toFixed(2));
 
+    
+
     return {
       totalProposals,
       totalSales,
       conversionRate,
-      totalRevenue
+      totalRevenue,
     };
   }
 }

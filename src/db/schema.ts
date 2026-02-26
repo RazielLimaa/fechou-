@@ -27,8 +27,11 @@ export const users = pgTable('users', {
   passwordHash: text('password_hash').notNull(),
   stripeCustomerId: varchar('stripe_customer_id', { length: 120 }),
   stripeConnectAccountId: varchar('stripe_connect_account_id', { length: 120 }),
-  createdAt: timestamp('created_at').defaultNow().notNull()
+  pixKey: text('pix_key'),
+  pixKeyType: varchar('pix_key_type', { length: 20 }),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
 });
+
 
 export const proposals = pgTable('proposals', {
   id: serial('id').primaryKey(),
@@ -180,4 +183,6 @@ export const userSubscriptionsRelations = relations(userSubscriptions, ({ one })
     fields: [userSubscriptions.userId],
     references: [users.id]
   })
+
+  
 }));
