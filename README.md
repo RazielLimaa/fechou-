@@ -54,6 +54,9 @@ Base URL: `http://localhost:3001/api`
 
 ### Metrics
 - `GET /metrics/sales`
+- `GET /metrics/premium-dashboard?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/export.csv`
+- Estrutura completa da página conectada: `docs/premium-dashboard-page-structure.md`
 
 ### Payments (Stripe)
 - `POST /payments/proposals/:id/checkout` (freelancer gera link de checkout para cliente pagar a proposta)
