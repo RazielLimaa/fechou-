@@ -24,6 +24,22 @@ const periodSchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly')
 });
 
+
+const rankedQuerySchema = z.object({
+  period: z.enum(['monthly', 'weekly']).default('monthly'),
+  limit: z.coerce.number().int().min(1).max(50).default(8)
+});
+
+const insightQuerySchema = z.object({
+  period: z.enum(['monthly', 'weekly']).default('monthly'),
+  limit: z.coerce.number().int().min(1).max(10).default(6)
+});
+
+const actionQuerySchema = z.object({
+  period: z.enum(['monthly', 'weekly']).default('monthly'),
+  limit: z.coerce.number().int().min(1).max(10).default(5)
+});
+
 const csvEscape = (value: string | number) => `"${String(value).replace(/"/g, '""')}"`;
 
 const toNumber = (rawValue: string) => {
@@ -426,6 +442,13 @@ function computePremiumDashboard(proposals: ProposalRow[], viewMode: 'monthly' |
   };
 }
 
+
+async function loadDashboardForUser(userId: number, period: 'monthly' | 'weekly') {
+  const proposals = (await storage.listProposals(userId)) as ProposalRow[];
+  const dashboard = computePremiumDashboard(proposals, period);
+  return { proposals, dashboard };
+}
+
 router.get('/sales', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
 
@@ -449,15 +472,201 @@ router.get('/premium-dashboard', async (req: AuthenticatedRequest, res) => {
     return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
   }
 
-  const proposals = (await storage.listProposals(userId)) as ProposalRow[];
   const viewMode = parsedQuery.data.period;
-
-  const dashboard = computePremiumDashboard(proposals, viewMode);
+  const { dashboard } = await loadDashboardForUser(userId, viewMode);
 
   return res.json({
     period: viewMode,
     generatedAt: new Date().toISOString(),
     ...dashboard
+  });
+});
+
+router.get('/premium-dashboard/kpis', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    soldCount: dashboard.soldCount,
+    pendingCount: dashboard.pendingCount,
+    canceledCount: dashboard.canceledCount,
+    totalValue: dashboard.totalValue,
+    pendingValue: dashboard.pendingValue,
+    avgTicket: dashboard.avgTicket,
+    conversionRatePct: dashboard.conversionRatePct
+  });
+});
+
+router.get('/premium-dashboard/charts', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    chartData: dashboard.chartData,
+    revenueSpark: dashboard.revenueSpark,
+    trend: dashboard.trend
+  });
+});
+
+router.get('/premium-dashboard/health', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    health: dashboard.health,
+    pendingAgingAvg: dashboard.pendingAgingAvg,
+    recentSoldCount: dashboard.recentSoldCount
+  });
+});
+
+router.get('/premium-dashboard/insights', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = insightQuerySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetros inválidos. Use period=monthly|weekly e limit entre 1 e 10.' });
+  }
+
+  const { period, limit } = parsedQuery.data;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    insights: dashboard.insights.slice(0, limit)
+  });
+});
+
+router.get('/premium-dashboard/actions', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = actionQuerySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetros inválidos. Use period=monthly|weekly e limit entre 1 e 10.' });
+  }
+
+  const { period, limit } = parsedQuery.data;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    actions: dashboard.actions.slice(0, limit)
+  });
+});
+
+router.get('/premium-dashboard/pending-reasons', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    pendingReasons: dashboard.pendingReasons
+  });
+});
+
+router.get('/premium-dashboard/pending-ranked', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = rankedQuerySchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetros inválidos. Use period=monthly|weekly e limit entre 1 e 50.' });
+  }
+
+  const { period, limit } = parsedQuery.data;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  return res.json({
+    period,
+    biggestPending: dashboard.biggestPending,
+    pendingRanked: dashboard.pendingRanked.slice(0, limit)
+  });
+});
+
+router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const { dashboard } = await loadDashboardForUser(userId, period);
+
+  const risk = dashboard.insights.some((i) => i.level === 'critical')
+    ? 'Alto'
+    : dashboard.insights.some((i) => i.level === 'warning')
+      ? 'Médio'
+      : 'Baixo';
+
+  return res.json({
+    period,
+    conversionRatePct: dashboard.conversionRatePct,
+    pendingValue: dashboard.pendingValue,
+    avgTicket: dashboard.avgTicket,
+    risk
   });
 });
 
