@@ -1,12 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
-import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import path from 'node:path';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
-import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
 
 const router = Router();
 
@@ -40,61 +35,6 @@ const insightQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(10).default(6)
 });
 
-
-async function generatePremiumDashboardXlsxWithPython(input: {
-  period: 'monthly' | 'weekly';
-  proposals: ProposalRow[];
-}) {
-  const tempDir = await mkdtemp(path.join(tmpdir(), 'fechou-premium-export-'));
-  const outputPath = path.join(tempDir, 'premium-dashboard.xlsx');
-  const scriptPath = path.resolve(process.cwd(), 'scripts', 'generate_premium_dashboard_excel.py');
-
-  const payload = JSON.stringify({
-    period: input.period,
-    proposals: input.proposals.map((p) => ({
-      id: p.id,
-      title: p.title,
-      clientName: p.clientName,
-      status: p.status,
-      value: p.value,
-      createdAt: new Date(p.createdAt).toISOString()
-    }))
-  });
-
-  const run = (pythonBin: string) => new Promise<void>((resolve, reject) => {
-    const child = spawn(pythonBin, [scriptPath, outputPath], { stdio: ['pipe', 'pipe', 'pipe'] });
-    let stderr = '';
-
-    child.stderr.on('data', (chunk) => {
-      stderr += chunk.toString();
-    });
-
-    child.on('error', (error) => {
-      reject(error);
-    });
-
-    child.on('close', (code) => {
-      if (code === 0) return resolve();
-      reject(new Error(stderr || `python exited with ${code}`));
-    });
-
-    child.stdin.write(payload);
-    child.stdin.end();
-  });
-
-  try {
-    try {
-      await run(process.env.PYTHON_BIN ?? 'python3');
-    } catch (error) {
-      if (process.env.PYTHON_BIN) throw error;
-      await run('python');
-    }
-
-    return await readFile(outputPath);
-  } finally {
-    await rm(tempDir, { recursive: true, force: true });
-  }
-}
 
 const actionQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
@@ -731,133 +671,5 @@ router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequ
   });
 });
 
-
-router.get('/premium-dashboard/export-template.xlsx', async (req: AuthenticatedRequest, res) => {
-  const userId = req.user?.id;
-
-  if (!userId) {
-    return res.status(401).json({ message: 'Não autenticado.' });
-  }
-
-  const parsedQuery = periodSchema.safeParse(req.query);
-  if (!parsedQuery.success) {
-    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
-  }
-
-  const period = parsedQuery.data.period;
-  const proposals = (await storage.listProposals(userId)) as ProposalRow[];
-
-  if (!proposals.length) {
-    return res.status(400).json({ message: 'Nenhuma proposta para exportar.' });
-  }
-
-  try {
-    const xlsxBuffer = await generatePremiumDashboardXlsxWithPython({ period, proposals });
-    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-    res.setHeader('Content-Disposition', `attachment; filename="premium-dashboard-${period}.xlsx"`);
-    return res.send(xlsxBuffer);
-  } catch (error) {
-    console.error('[premium-dashboard-export] erro ao gerar xlsx', error);
-    return res.status(500).json({ message: 'Falha ao gerar planilha premium.' });
-  }
-});
-
-router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {
-  const userId = req.user?.id;
-
-  if (!userId) {
-    return res.status(401).json({ message: 'Não autenticado.' });
-  }
-
-  const proposals = (await storage.listProposals(userId)) as ProposalRow[];
-  const dashboard = computePremiumDashboard(proposals, 'monthly');
-
-  if (!proposals.length) {
-    return res.status(400).json({ message: 'Nenhuma proposta para exportar.' });
-  }
-
-  const monthNames = ['Janeiro', 'Fevereiro', 'Março', 'Abril', 'Maio', 'Junho', 'Julho', 'Agosto', 'Setembro', 'Outubro', 'Novembro', 'Dezembro'];
-  const pendingReasons = ['Aguardando Assinatura', 'Aguardando Pagamento', 'Em Revisão'];
-
-  const monthlyMap = new Map<string, { sold: number; pending: number; revenue: number; total: number }>();
-  const weeklyMap = new Map<string, { sold: number; pending: number; revenue: number; total: number }>();
-
-  proposals.forEach((proposal) => {
-    const createdAt = new Date(proposal.createdAt);
-    const monthlyKey = `${createdAt.getFullYear()}-${String(createdAt.getMonth() + 1).padStart(2, '0')}`;
-    const weeklyKey = `${createdAt.getFullYear()}-W${String(getISOWeek(createdAt)).padStart(2, '0')}`;
-    const value = toNumber(proposal.value);
-
-    const updateMap = (map: Map<string, { sold: number; pending: number; revenue: number; total: number }>, key: string) => {
-      const current = map.get(key) || { sold: 0, pending: 0, revenue: 0, total: 0 };
-      current.total += 1;
-      if (proposal.status === 'vendida') {
-        current.sold += 1;
-        current.revenue += value;
-      }
-      if (proposal.status === 'pendente') {
-        current.pending += 1;
-      }
-      map.set(key, current);
-    };
-
-    updateMap(monthlyMap, monthlyKey);
-    updateMap(weeklyMap, weeklyKey);
-  });
-
-  const overallAvgTicket = dashboard.soldCount ? dashboard.totalValue / dashboard.soldCount : 0;
-
-  const headers = [
-    'proposal_id', 'titulo_proposta', 'cliente', 'status', 'valor_brl', 'data_criacao_iso', 'ano', 'trimestre', 'mes_numero', 'mes_nome',
-    'semana_iso', 'periodo_mensal', 'periodo_semanal', 'is_vendida', 'is_pendente', 'is_cancelada', 'receita_realizada_brl',
-    'motivo_pendencia', 'dias_aberta', 'mensal_total_contratos', 'mensal_contratos_vendidos', 'mensal_contratos_pendentes',
-    'mensal_receita_total_brl', 'mensal_taxa_conversao_percentual', 'mensal_ticket_medio_brl', 'semanal_total_contratos',
-    'semanal_contratos_vendidos', 'semanal_contratos_pendentes', 'semanal_receita_total_brl', 'semanal_taxa_conversao_percentual',
-    'semanal_ticket_medio_brl', 'kpi_total_contratos_vendidos_geral', 'kpi_receita_total_geral_brl', 'kpi_contratos_pendentes_geral',
-    'kpi_ticket_medio_geral_brl', 'health_score_0_100', 'pendencias_aging_medio_dias'
-  ];
-
-  const rows = proposals.map((proposal) => {
-    const createdAt = new Date(proposal.createdAt);
-    const value = toNumber(proposal.value);
-    const year = createdAt.getFullYear();
-    const month = createdAt.getMonth() + 1;
-    const isoWeek = getISOWeek(createdAt);
-    const monthlyKey = `${year}-${String(month).padStart(2, '0')}`;
-    const weeklyKey = `${year}-W${String(isoWeek).padStart(2, '0')}`;
-    const monthAgg = monthlyMap.get(monthlyKey) || { sold: 0, pending: 0, revenue: 0, total: 0 };
-    const weekAgg = weeklyMap.get(weeklyKey) || { sold: 0, pending: 0, revenue: 0, total: 0 };
-    const isSold = proposal.status === 'vendida';
-    const isPending = proposal.status === 'pendente';
-    const isCanceled = proposal.status === 'cancelada';
-    const stableReasonIndex = String(proposal.id).length % pendingReasons.length;
-    const pendingReason = isPending ? pendingReasons[stableReasonIndex] : 'N/A';
-
-    const monthlyConversion = monthAgg.total ? (monthAgg.sold / monthAgg.total) * 100 : 0;
-    const weeklyConversion = weekAgg.total ? (weekAgg.sold / weekAgg.total) * 100 : 0;
-    const monthlyAvg = monthAgg.sold ? monthAgg.revenue / monthAgg.sold : 0;
-    const weeklyAvg = weekAgg.sold ? weekAgg.revenue / weekAgg.sold : 0;
-
-    return [
-      csvEscape(proposal.id), csvEscape(proposal.title), csvEscape(proposal.clientName), csvEscape(proposal.status),
-      csvEscape(value.toFixed(2)), csvEscape(createdAt.toISOString()), csvEscape(year), csvEscape(`T${Math.ceil(month / 3)}`),
-      csvEscape(month), csvEscape(monthNames[createdAt.getMonth()]), csvEscape(isoWeek), csvEscape(monthlyKey), csvEscape(weeklyKey),
-      csvEscape(isSold ? 1 : 0), csvEscape(isPending ? 1 : 0), csvEscape(isCanceled ? 1 : 0), csvEscape(isSold ? value.toFixed(2) : '0.00'),
-      csvEscape(pendingReason), csvEscape(daysBetween(createdAt)), csvEscape(monthAgg.total), csvEscape(monthAgg.sold), csvEscape(monthAgg.pending),
-      csvEscape(monthAgg.revenue.toFixed(2)), csvEscape(monthlyConversion.toFixed(2)), csvEscape(monthlyAvg.toFixed(2)), csvEscape(weekAgg.total),
-      csvEscape(weekAgg.sold), csvEscape(weekAgg.pending), csvEscape(weekAgg.revenue.toFixed(2)), csvEscape(weeklyConversion.toFixed(2)),
-      csvEscape(weeklyAvg.toFixed(2)), csvEscape(dashboard.soldCount), csvEscape(dashboard.totalValue.toFixed(2)), csvEscape(dashboard.pendingCount),
-      csvEscape(overallAvgTicket.toFixed(2)), csvEscape(dashboard.health.score), csvEscape(dashboard.pendingAgingAvg.toFixed(0))
-    ];
-  });
-
-  const BOM = '\uFEFF';
-  const csvContent = BOM + headers.join(';') + '\n' + rows.map((row) => row.join(';')).join('\n');
-
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="PowerBI_Vendas_Completo_${new Date().toISOString().slice(0, 10)}.csv"`);
-
-  return res.send(csvContent);
-});
 
 export default router;
