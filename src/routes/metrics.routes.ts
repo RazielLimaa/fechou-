@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
+import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
 
 const router = Router();
 
