@@ -2,7 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
-import { buildPremiumDashboardSpreadsheetXml } from '../services/premiumDashboardSpreadsheet.js';
+import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
 
 const router = Router();
 
@@ -672,7 +672,7 @@ router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequ
 });
 
 
-router.get('/premium-dashboard/export-template.xls', async (req: AuthenticatedRequest, res) => {
+router.get('/premium-dashboard/export-template.xlsx', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
 
   if (!userId) {
@@ -692,16 +692,16 @@ router.get('/premium-dashboard/export-template.xls', async (req: AuthenticatedRe
   }
 
   const dashboard = computePremiumDashboard(proposals, period);
-  const xml = buildPremiumDashboardSpreadsheetXml({
+  const xlsxBuffer = buildPremiumDashboardSpreadsheetXlsx({
     proposals,
     dashboard,
     period
   });
 
-  res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
-  res.setHeader('Content-Disposition', `attachment; filename="Fechou_Template_Premium_${new Date().toISOString().slice(0, 10)}.xls"`);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="Fechou_Template_Premium_${new Date().toISOString().slice(0, 10)}.xlsx"`);
 
-  return res.send(xml);
+  return res.send(xlsxBuffer);
 });
 
 router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {

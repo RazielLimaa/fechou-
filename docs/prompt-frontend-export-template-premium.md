@@ -4,7 +4,7 @@ Use este prompt em uma IA/copilot do frontend:
 
 ```text
 Contexto:
-- O backend já possui o endpoint autenticado `GET /api/metrics/premium-dashboard/export-template.xls?period=monthly|weekly`.
+- O backend já possui o endpoint autenticado `GET /api/metrics/premium-dashboard/export-template.xlsx?period=monthly|weekly`.
 - Esse endpoint retorna uma planilha template (Excel compatível) preenchida com os mesmos dados do dashboard premium do usuário autenticado.
 - Também existe `GET /api/metrics/premium-dashboard/export.csv` para BI.
 
@@ -29,7 +29,7 @@ Tarefa:
    - não quebrar contratos existentes dos endpoints premium.
 
 5) Critérios de aceite:
-   - botão de template baixa arquivo `.xls` com sucesso.
+   - botão de template baixa arquivo `.xlsx` com sucesso.
    - dados exportados mudam conforme usuário logado.
    - dados exportados respeitam `viewMode` selecionado.
    - botão CSV continua funcionando normalmente.

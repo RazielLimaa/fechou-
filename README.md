@@ -64,7 +64,7 @@ Base URL: `http://localhost:3001/api`
 - `GET /metrics/premium-dashboard/pending-ranked?period=monthly|weekly&limit=8`
 - `GET /metrics/premium-dashboard/executive-summary?period=monthly|weekly`
 - `GET /metrics/premium-dashboard/export.csv`
-- `GET /metrics/premium-dashboard/export-template.xls?period=monthly|weekly`
+- `GET /metrics/premium-dashboard/export-template.xlsx?period=monthly|weekly`
 - Estrutura completa da página conectada: `docs/premium-dashboard-page-structure.md`
 - Prompt pronto para implementação frontend do template: `docs/prompt-frontend-export-template-premium.md`
 
