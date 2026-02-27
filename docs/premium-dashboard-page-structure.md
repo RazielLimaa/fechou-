@@ -16,6 +16,7 @@ Base: `/api/metrics`
 8. `GET /premium-dashboard/pending-ranked?period=monthly|weekly&limit=8`
 9. `GET /premium-dashboard/executive-summary?period=monthly|weekly`
 10. `GET /premium-dashboard/export.csv`
+11. `GET /premium-dashboard/export-template.xlsx?period=monthly|weekly`
 
 ## Conexão por função da página
 
@@ -28,7 +29,7 @@ Base: `/api/metrics`
 - Pizza motivos: endpoint `pending-reasons`.
 - Lista pendências prioritárias + maior pendência: endpoint `pending-ranked`.
 - Resumo executivo (risco/conversão/pendente/ticket): endpoint `executive-summary`.
-- Botão exportar: endpoint `export.csv`.
+- Botão exportar: endpoint `export.csv` para BI e `export-template.xlsx` para planilha template premium preenchida com os dados do usuário.
 
 ## Exemplo de camada de API (frontend)
 
@@ -68,6 +69,7 @@ export const metricsApi = {
   pendingRanked: (period: PeriodType, limit = 8) => get(`/premium-dashboard/pending-ranked?${qs({ period, limit })}`),
   executiveSummary: (period: PeriodType) => get(`/premium-dashboard/executive-summary?${qs({ period })}`),
   exportCsvUrl: () => "/api/metrics/premium-dashboard/export.csv",
+  exportTemplateUrl: (period: PeriodType) => `/api/metrics/premium-dashboard/export-template.xlsx?${qs({ period })}`,
 };
 ```
 
@@ -120,7 +122,11 @@ const executive = {
   risk: execQ.data?.risk ?? "Baixo",
 };
 
-const exportToExcel = () => {
+const exportToExcelTemplate = (period: PeriodType) => {
+  window.open(metricsApi.exportTemplateUrl(period), "_blank", "noopener,noreferrer");
+};
+
+const exportToCsv = () => {
   window.open(metricsApi.exportCsvUrl(), "_blank", "noopener,noreferrer");
 };
 ```

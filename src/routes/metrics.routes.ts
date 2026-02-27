@@ -2,6 +2,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
+import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
 
 const router = Router();
 
@@ -668,6 +669,39 @@ router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequ
     avgTicket: dashboard.avgTicket,
     risk
   });
+});
+
+
+router.get('/premium-dashboard/export-template.xlsx', async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+
+  if (!userId) {
+    return res.status(401).json({ message: 'Não autenticado.' });
+  }
+
+  const parsedQuery = periodSchema.safeParse(req.query);
+  if (!parsedQuery.success) {
+    return res.status(400).json({ message: 'Parâmetro period inválido. Use monthly ou weekly.' });
+  }
+
+  const period = parsedQuery.data.period;
+  const proposals = (await storage.listProposals(userId)) as ProposalRow[];
+
+  if (!proposals.length) {
+    return res.status(400).json({ message: 'Nenhuma proposta para exportar.' });
+  }
+
+  const dashboard = computePremiumDashboard(proposals, period);
+  const xlsxBuffer = buildPremiumDashboardSpreadsheetXlsx({
+    proposals,
+    dashboard,
+    period
+  });
+
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="Fechou_Template_Premium_${new Date().toISOString().slice(0, 10)}.xlsx"`);
+
+  return res.send(xlsxBuffer);
 });
 
 router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {
