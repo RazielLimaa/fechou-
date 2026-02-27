@@ -11,6 +11,7 @@ import mercadoPagoRoutes from './routes/mercadopago.routes.js';
 import webhooksRoutes from './routes/webhooks.routes.js';
 import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 import userRoutes from "./routes/user.routes.js";
+import copilotRoutes from './routes/copilot.routes.js';
 
 const app = express();
 const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
@@ -71,6 +72,7 @@ app.use('/api/payments', paymentsRoutes);
 app.use('/api/mercadopago', mercadoPagoRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use("/api/user", userRoutes);
+app.use('/api/copilot', copilotRoutes);
 
 app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
   if (err instanceof SyntaxError && 'body' in err) {
