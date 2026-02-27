@@ -35,6 +35,7 @@ const insightQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(10).default(6)
 });
 
+
 const actionQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
   limit: z.coerce.number().int().min(1).max(10).default(5)
@@ -669,6 +670,7 @@ router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequ
     risk
   });
 });
+
 
 router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
