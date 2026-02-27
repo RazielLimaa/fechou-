@@ -1,5 +1,9 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
 import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
@@ -35,6 +39,62 @@ const insightQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
   limit: z.coerce.number().int().min(1).max(10).default(6)
 });
+
+
+async function generatePremiumDashboardXlsxWithPython(input: {
+  period: 'monthly' | 'weekly';
+  proposals: ProposalRow[];
+}) {
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'fechou-premium-export-'));
+  const outputPath = path.join(tempDir, 'premium-dashboard.xlsx');
+  const scriptPath = path.resolve(process.cwd(), 'scripts', 'generate_premium_dashboard_excel.py');
+
+  const payload = JSON.stringify({
+    period: input.period,
+    proposals: input.proposals.map((p) => ({
+      id: p.id,
+      title: p.title,
+      clientName: p.clientName,
+      status: p.status,
+      value: p.value,
+      createdAt: new Date(p.createdAt).toISOString()
+    }))
+  });
+
+  const run = (pythonBin: string) => new Promise<void>((resolve, reject) => {
+    const child = spawn(pythonBin, [scriptPath, outputPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stderr = '';
+
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    child.on('error', (error) => {
+      reject(error);
+    });
+
+    child.on('close', (code) => {
+      if (code === 0) return resolve();
+      reject(new Error(stderr || `python exited with ${code}`));
+    });
+
+    child.stdin.write(payload);
+    child.stdin.end();
+  });
+
+  try {
+    try {
+      await run(process.env.PYTHON_BIN ?? 'python3');
+    } catch (error) {
+      if (process.env.PYTHON_BIN) throw error;
+      await run('python');
+    }
+
+    return await readFile(outputPath);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+}
 
 const actionQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
@@ -691,17 +751,15 @@ router.get('/premium-dashboard/export-template.xlsx', async (req: AuthenticatedR
     return res.status(400).json({ message: 'Nenhuma proposta para exportar.' });
   }
 
-  const dashboard = computePremiumDashboard(proposals, period);
-  const xlsxBuffer = buildPremiumDashboardSpreadsheetXlsx({
-    proposals,
-    dashboard,
-    period
-  });
-
-  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
-  res.setHeader('Content-Disposition', `attachment; filename="Fechou_Template_Premium_${new Date().toISOString().slice(0, 10)}.xlsx"`);
-
-  return res.send(xlsxBuffer);
+  try {
+    const xlsxBuffer = await generatePremiumDashboardXlsxWithPython({ period, proposals });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="premium-dashboard-${period}.xlsx"`);
+    return res.send(xlsxBuffer);
+  } catch (error) {
+    console.error('[premium-dashboard-export] erro ao gerar xlsx', error);
+    return res.status(500).json({ message: 'Falha ao gerar planilha premium.' });
+  }
 });
 
 router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {

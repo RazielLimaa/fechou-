@@ -1,40 +1,48 @@
-# Prompt para implementar no frontend (exportação de template premium)
+# Export Excel premium (.xlsx) — integração frontend
 
-Use este prompt em uma IA/copilot do frontend:
+## Exemplo de chamada no frontend (fetch + blob)
 
-```text
-Contexto:
-- O backend já possui o endpoint autenticado `GET /api/metrics/premium-dashboard/export-template.xlsx?period=monthly|weekly`.
-- Esse endpoint retorna uma planilha template (Excel compatível) preenchida com os mesmos dados do dashboard premium do usuário autenticado.
-- Também existe `GET /api/metrics/premium-dashboard/export.csv` para BI.
+```ts
+export async function downloadPremiumDashboardTemplate(period: "monthly" | "weekly") {
+  const response = await fetch(`/api/metrics/premium-dashboard/export-template.xlsx?period=${period}`, {
+    method: "GET",
+    credentials: "include", // importante para auth por cookie
+    headers: {
+      Accept: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    }
+  });
 
-Tarefa:
-1) Adicionar na camada de API do frontend:
-   - `exportTemplateUrl(period: "monthly" | "weekly")`
-   - manter `exportCsvUrl()`.
+  const contentType = response.headers.get("content-type") || "";
+  if (!response.ok || !contentType.includes("spreadsheetml.sheet")) {
+    let message = "Falha ao exportar planilha.";
+    try {
+      const body = await response.json();
+      if (body?.message) message = body.message;
+    } catch {
+      // resposta não-JSON
+    }
+    throw new Error(message);
+  }
 
-2) Na tela do dashboard premium:
-   - adicionar um botão: "Baixar template (Excel)".
-   - ao clicar, abrir `window.open(metricsApi.exportTemplateUrl(viewMode), "_blank", "noopener,noreferrer")`.
-   - manter botão de CSV separado (ex.: "Exportar CSV (BI)").
-
-3) UX/estado:
-   - desabilitar botão de exportação se usuário não estiver autenticado.
-   - mostrar feedback de erro amigável para status 400/401/403.
-   - preservar o `viewMode` atual (monthly/weekly) ao exportar template.
-
-4) Regras importantes:
-   - não fazer parse do arquivo no frontend; apenas iniciar download.
-   - não enviar token por querystring; usar o mesmo mecanismo de autenticação já usado na aplicação (cookie/httpOnly ou header padrão do app).
-   - não quebrar contratos existentes dos endpoints premium.
-
-5) Critérios de aceite:
-   - botão de template baixa arquivo `.xlsx` com sucesso.
-   - dados exportados mudam conforme usuário logado.
-   - dados exportados respeitam `viewMode` selecionado.
-   - botão CSV continua funcionando normalmente.
-
-Entrega esperada:
-- diff dos arquivos alterados (api client, página premium e componentes de ação/header).
-- breve checklist de teste manual com evidência dos cenários acima.
+  const blob = await response.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `premium-dashboard-${period}.xlsx`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
 ```
+
+## Observações de deploy (Windows/Linux + venv Python)
+
+- O backend chama o script `scripts/generate_premium_dashboard_excel.py` via `python3` (fallback `python`).
+- Em produção, instale dependências Python no host/container:
+  - `openpyxl`
+- Você pode definir binário explícito com `PYTHON_BIN`:
+  - Linux: `PYTHON_BIN=/opt/venv/bin/python`
+  - Windows: `PYTHON_BIN=C:\\venv\\Scripts\\python.exe`
+- Garanta que a pasta `scripts/` esteja presente no artefato de deploy.
+- Se o Python falhar, API retorna `500 { message: "Falha ao gerar planilha premium." }`.

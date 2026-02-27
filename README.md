@@ -67,6 +67,7 @@ Base URL: `http://localhost:3001/api`
 - `GET /metrics/premium-dashboard/export-template.xlsx?period=monthly|weekly`
 - Estrutura completa da página conectada: `docs/premium-dashboard-page-structure.md`
 - Prompt pronto para implementação frontend do template: `docs/prompt-frontend-export-template-premium.md`
+- Requisito para export-template.xlsx: Python 3 + pacote `openpyxl` instalados no ambiente da API.
 
 ### Payments (Stripe)
 - `POST /payments/proposals/:id/checkout` (freelancer gera link de checkout para cliente pagar a proposta)
