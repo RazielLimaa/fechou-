@@ -1,7 +1,12 @@
 import { Router } from 'express';
 import { z } from 'zod';
+import { spawn } from 'node:child_process';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
 import { storage } from '../storage.js';
+import { buildPremiumDashboardSpreadsheetXlsx } from '../services/premiumDashboardSpreadsheet.js';
 
 const router = Router();
 
@@ -34,7 +39,6 @@ const insightQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
   limit: z.coerce.number().int().min(1).max(10).default(6)
 });
-
 
 const actionQuerySchema = z.object({
   period: z.enum(['monthly', 'weekly']).default('monthly'),
@@ -670,7 +674,6 @@ router.get('/premium-dashboard/executive-summary', async (req: AuthenticatedRequ
     risk
   });
 });
-
 
 router.get('/premium-dashboard/export.csv', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
