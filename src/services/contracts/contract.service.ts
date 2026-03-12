@@ -44,7 +44,7 @@ export class ContractService {
     };
   }
 
-  async getContract(contractId: number, userId: number) {
+  async getContract(contractId: string, userId: number) {
     const [contract] = await db
       .select()
       .from(contracts)
@@ -73,7 +73,7 @@ export class ContractService {
     };
   }
 
-  async updateContractLayout(contractId: number, userId: number, layoutConfig: Record<string, unknown>) {
+  async updateContractLayout(contractId: string, userId: number, layoutConfig: Record<string, unknown>) {
     const [updated] = await db
       .update(contracts)
       .set({
