@@ -38,7 +38,7 @@ export class ContractRenderService {
     });
   }
 
-  async renderContract(contractId: number, userId: number) {
+  async renderContract(contractId: string, userId: number) {
     const [contract] = await db
       .select()
       .from(contracts)
@@ -117,7 +117,7 @@ export class ContractRenderService {
     return { html, contract, clauses: renderedClauses };
   }
 
-  async generateContractPDF(contractId: number, userId: number) {
+  async generateContractPDF(contractId: string, userId: number) {
     const rendered = await this.renderContract(contractId, userId);
     if (!rendered) return null;
 

@@ -28,7 +28,7 @@ export class ClauseService {
     return db.select().from(clauses).where(eq(clauses.profession, profession));
   }
 
-  async addClauseToContract(contractId: number, clauseId: number) {
+  async addClauseToContract(contractId: string, clauseId: number) {
     const [contract] = await db.select({ id: contracts.id }).from(contracts).where(eq(contracts.id, contractId));
     if (!contract) return null;
 
@@ -52,7 +52,7 @@ export class ClauseService {
     return row;
   }
 
-  async removeClauseFromContract(contractId: number, clauseId: number) {
+  async removeClauseFromContract(contractId: string, clauseId: number) {
     const [removed] = await db
       .delete(contractClauses)
       .where(and(eq(contractClauses.contractId, contractId), eq(contractClauses.clauseId, clauseId)))
@@ -61,7 +61,7 @@ export class ClauseService {
     return removed;
   }
 
-  async updateClauseContent(contractId: number, clauseId: number, content: string) {
+  async updateClauseContent(contractId: string, clauseId: number, content: string) {
     const [updated] = await db
       .update(contractClauses)
       .set({ customContent: content })
@@ -71,7 +71,7 @@ export class ClauseService {
     return updated;
   }
 
-  async reorderClauses(contractId: number, startIndex: number, endIndex: number) {
+  async reorderClauses(contractId: string, startIndex: number, endIndex: number) {
     const rows = await db
       .select()
       .from(contractClauses)
