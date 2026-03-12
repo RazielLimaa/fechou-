@@ -19,6 +19,8 @@ export const proposalLifecycleStatusEnum = pgEnum('proposal_lifecycle_status', [
 export const providerEnum = pgEnum('payment_provider', ['mercadopago']);
 export const proposalPaymentStatusEnum = pgEnum('proposal_payment_status', ['PENDING', 'CONFIRMED', 'FAILED']);
 export const mercadoPagoAuthMethodEnum = pgEnum('mercado_pago_auth_method', ['oauth', 'api_key']);
+export const contractStatusEnum = pgEnum('contract_status', ['draft', 'editing', 'finalized']);
+export const userPlanTypeEnum = pgEnum('user_plan_type', ['free', 'pro', 'premium']);
 
 export const users = pgTable('users', {
   id: serial('id').primaryKey(),
@@ -135,11 +137,94 @@ export const payments = pgTable('payments', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
+export const contractTemplates = pgTable('contract_templates', {
+  id: serial('id').primaryKey(),
+  name: varchar('name', { length: 160 }).notNull(),
+  layoutStructure: jsonb('layout_structure').$type<Record<string, unknown>>().notNull().default({}),
+  isDefault: boolean('is_default').notNull().default(false)
+});
+
+export const contracts = pgTable('contracts', {
+  id: serial('id').primaryKey(),
+  userId: integer('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  clientName: varchar('client_name', { length: 140 }).notNull(),
+  profession: varchar('profession', { length: 80 }).notNull(),
+  contractType: varchar('contract_type', { length: 120 }).notNull(),
+  executionDate: timestamp('execution_date').notNull(),
+  contractValue: numeric('contract_value', { precision: 12, scale: 2 }).notNull(),
+  paymentMethod: varchar('payment_method', { length: 120 }).notNull(),
+  serviceScope: text('service_scope').notNull(),
+  status: contractStatusEnum('status').notNull().default('draft'),
+  templateId: integer('template_id').references(() => contractTemplates.id, { onDelete: 'set null' }),
+  layoutConfig: jsonb('layout_config').$type<Record<string, unknown>>().notNull().default({}),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull()
+});
+
+export const clauses = pgTable('clauses', {
+  id: serial('id').primaryKey(),
+  title: varchar('title', { length: 180 }).notNull(),
+  content: text('content').notNull(),
+  category: varchar('category', { length: 100 }).notNull(),
+  profession: varchar('profession', { length: 80 }),
+  isDefault: boolean('is_default').notNull().default(false),
+  createdAt: timestamp('created_at').defaultNow().notNull()
+});
+
+export const contractClauses = pgTable('contract_clauses', {
+  id: serial('id').primaryKey(),
+  contractId: integer('contract_id')
+    .notNull()
+    .references(() => contracts.id, { onDelete: 'cascade' }),
+  clauseId: integer('clause_id')
+    .notNull()
+    .references(() => clauses.id, { onDelete: 'cascade' }),
+  customContent: text('custom_content'),
+  orderIndex: integer('order_index').notNull().default(0)
+});
+
+export const usersPlan = pgTable('users_plan', {
+  userId: integer('user_id')
+    .primaryKey()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  planType: userPlanTypeEnum('plan_type').notNull().default('free')
+});
+
 export const usersRelations = relations(users, ({ many }) => ({
   proposals: many(proposals),
   paymentSessions: many(paymentSessions),
   subscriptions: many(userSubscriptions),
-  mercadoPagoAccount: many(mercadoPagoAccounts)
+  mercadoPagoAccount: many(mercadoPagoAccounts),
+  contracts: many(contracts)
+}));
+
+export const contractsRelations = relations(contracts, ({ one, many }) => ({
+  user: one(users, {
+    fields: [contracts.userId],
+    references: [users.id]
+  }),
+  template: one(contractTemplates, {
+    fields: [contracts.templateId],
+    references: [contractTemplates.id]
+  }),
+  clauses: many(contractClauses)
+}));
+
+export const clausesRelations = relations(clauses, ({ many }) => ({
+  contractClauses: many(contractClauses)
+}));
+
+export const contractClausesRelations = relations(contractClauses, ({ one }) => ({
+  contract: one(contracts, {
+    fields: [contractClauses.contractId],
+    references: [contracts.id]
+  }),
+  clause: one(clauses, {
+    fields: [contractClauses.clauseId],
+    references: [clauses.id]
+  })
 }));
 
 export const proposalsRelations = relations(proposals, ({ one, many }) => ({
