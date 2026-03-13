@@ -38,12 +38,20 @@ export class ContractRenderService {
     });
   }
 
-  async renderContract(contractId: string, userId: number) {
+  async renderContract(contractId: number, userId: number) {
     const [contract] = await db
       .select()
       .from(contracts)
       .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+    console.log("contrato encontrado:", contract);
+    const result = await db
+      .select()
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
 
+    console.log("contractId:", contractId, typeof contractId);
+    console.log("userId:", userId, typeof userId);
+    console.log("result:", result);
     if (!contract) return null;
 
     const contractClausesRows = await db
@@ -117,7 +125,7 @@ export class ContractRenderService {
     return { html, contract, clauses: renderedClauses };
   }
 
-  async generateContractPDF(contractId: string, userId: number) {
+  async generateContractPDF(contractId: number, userId: number) {
     const rendered = await this.renderContract(contractId, userId);
     if (!rendered) return null;
 

@@ -9,6 +9,7 @@ import {
   serial,
   text,
   timestamp,
+  uuid,
   varchar
 } from 'drizzle-orm/pg-core';
 
@@ -33,7 +34,6 @@ export const users = pgTable('users', {
   pixKeyType: varchar('pix_key_type', { length: 20 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
-
 
 export const proposals = pgTable('proposals', {
   id: serial('id').primaryKey(),
@@ -104,8 +104,6 @@ export const userSubscriptions = pgTable('user_subscriptions', {
   updatedAt: timestamp('updated_at').defaultNow().notNull()
 });
 
-
-
 export const mercadoPagoAccounts = pgTable('mercado_pago_accounts', {
   id: serial('id').primaryKey(),
   userId: integer('user_id')
@@ -164,7 +162,7 @@ export const contracts = pgTable('contracts', {
 });
 
 export const clauses = pgTable('clauses', {
-  id: serial('id').primaryKey(),
+  id: uuid('id').primaryKey(),
   title: varchar('title', { length: 180 }).notNull(),
   content: text('content').notNull(),
   category: varchar('category', { length: 100 }).notNull(),
@@ -178,7 +176,7 @@ export const contractClauses = pgTable('contract_clauses', {
   contractId: integer('contract_id')
     .notNull()
     .references(() => contracts.id, { onDelete: 'cascade' }),
-  clauseId: integer('clause_id')
+  clauseId: uuid('clause_id')
     .notNull()
     .references(() => clauses.id, { onDelete: 'cascade' }),
   customContent: text('custom_content'),
@@ -247,8 +245,6 @@ export const paymentSessionsRelations = relations(paymentSessions, ({ one }) => 
   })
 }));
 
-
-
 export const mercadoPagoAccountsRelations = relations(mercadoPagoAccounts, ({ one }) => ({
   user: one(users, {
     fields: [mercadoPagoAccounts.userId],
@@ -268,6 +264,4 @@ export const userSubscriptionsRelations = relations(userSubscriptions, ({ one })
     fields: [userSubscriptions.userId],
     references: [users.id]
   })
-
-  
 }));
