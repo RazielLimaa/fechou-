@@ -9,7 +9,7 @@ import { templateService } from '../services/contracts/template.service.js';
 const router = Router();
 router.use(authenticateOrMvp);
 
-const contractIdSchema = z.string().uuid();
+const contractIdSchema = z.coerce.number().int().positive();
 const clauseIdSchema = z.coerce.number().int().positive();
 
 const createContractSchema = z.object({
@@ -140,7 +140,7 @@ router.post('/render', async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
 
-  const bodySchema = z.object({ contractId: z.string().uuid() });
+  const bodySchema = z.object({ contractId: z.coerce.number().int().positive() });
   const parsedBody = bodySchema.safeParse(req.body);
   if (!parsedBody.success) return res.status(400).json({ message: 'Dados inválidos.', errors: parsedBody.error.flatten() });
 
