@@ -13,6 +13,7 @@ import {
 import { storage } from '../storage.js';
 import { z } from 'zod';
 import { sensitiveRateLimiter } from '../middleware/security.js';
+import { requireStepUp } from '../middleware/step-up.js';
 
 const router = Router();
 router.use(sensitiveRateLimiter);
@@ -113,7 +114,7 @@ router.post('/api-key/verify', authenticateOrMvp, async (req: AuthenticatedReque
   }
 });
 
-router.post('/api-key/register', authenticateOrMvp, async (req: AuthenticatedRequest, res) => {
+router.post('/api-key/register', authenticateOrMvp, requireStepUp('integrations.mp.api-key.register', (req) => ({ mpAccessToken: Boolean(req.body?.accessToken) })), async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) {
     return res.status(401).json({ message: 'Não autenticado.' });

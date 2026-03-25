@@ -2,6 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { csrfProtection } from '../../src/middleware/distributed-security.js';
 import { verifyMercadoPagoWebhookSignature } from '../../src/services/mercadoPago.js';
+<<<<<<< codex/conduct-thorough-security-audit-of-backend-ipxqeb
+import { requireStepUp } from '../../src/middleware/step-up.js';
+import { buildStepUpPayloadHash } from '../../src/services/stepUp.js';
+=======
+>>>>>>> main
 
 function createRes() {
   const res: any = {
@@ -73,3 +78,30 @@ test('webhook signature falha sem secret', async () => {
 
   assert.equal(valid, false);
 });
+<<<<<<< codex/conduct-thorough-security-audit-of-backend-ipxqeb
+
+test('step-up payload hash é estável para payload idêntico', async () => {
+  const a = buildStepUpPayloadHash({ proposalId: 10, amount: 1000 });
+  const b = buildStepUpPayloadHash({ proposalId: 10, amount: 1000 });
+  assert.equal(a, b);
+});
+
+test('requireStepUp retorna 403 quando token não é enviado', async () => {
+  const middleware = requireStepUp('payments.mark-paid', (req) => ({ id: req.params.id }));
+  const req: any = {
+    user: { id: 1 },
+    method: 'POST',
+    originalUrl: '/api/proposals/10/mark-paid',
+    params: { id: '10' },
+    headers: {},
+    ip: '127.0.0.1',
+    header(name: string) { return this.headers[name.toLowerCase()]; },
+  };
+  const res = createRes();
+  let nextCalled = false;
+  await middleware(req, res as any, () => { nextCalled = true; });
+  assert.equal(nextCalled, false);
+  assert.equal(res.statusCode, 403);
+});
+=======
+>>>>>>> main

@@ -2,6 +2,16 @@ import crypto from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 
+export interface DistributedSecurityStore {
+  checkRateLimit(input: {
+    scope: string;
+    key: string;
+    limit: number;
+    windowMs: number;
+  }): Promise<{ allowed: boolean; count: number; retryAfterSec: number }>;
+  markReplay(input: { scope: string; token: string; ttlMs: number }): Promise<{ replay: boolean; tokenHash: string }>;
+}
+
 export async function checkDistributedRateLimit(input: {
   scope: string;
   key: string;
@@ -67,3 +77,15 @@ export async function markReplayToken(input: {
     tokenHash,
   };
 }
+
+export async function cleanupSecurityStore() {
+  const now = new Date();
+  const oldRateLimitThreshold = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+  await db.execute(sql`DELETE FROM security_replay_tokens WHERE expires_at < ${now}`);
+  await db.execute(sql`DELETE FROM security_rate_limits WHERE updated_at < ${oldRateLimitThreshold}`);
+}
+
+export const pgSecurityStore: DistributedSecurityStore = {
+  checkRateLimit: checkDistributedRateLimit,
+  markReplay: markReplayToken,
+};

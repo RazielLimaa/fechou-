@@ -263,6 +263,16 @@ export const securityReplayTokens = pgTable("security_replay_tokens", {
   createdAt: timestamp("created_at").notNull().defaultNow(),
 });
 
+export const securityStepUpTokens = pgTable("security_stepup_tokens", {
+  tokenHash: varchar("token_hash", { length: 128 }).primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  scope: varchar("scope", { length: 120 }).notNull(),
+  payloadHash: varchar("payload_hash", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SCORE SYSTEM
 // ─────────────────────────────────────────────────────────────────────────────

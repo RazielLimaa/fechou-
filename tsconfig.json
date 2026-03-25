@@ -12,5 +12,5 @@
   },
   "include": [
     "src/**/*.ts"
-, "src/services/token.ts", "scripts/create-mp-plans.ts"  ]
+  ]
 }

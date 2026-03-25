@@ -26,6 +26,7 @@ import {
 } from "../lib/signatureCrypto.js";
 import { db } from "../db/index.js";
 import { contracts, users } from "../db/schema.js";
+import { requireStepUp } from "../middleware/step-up.js";
 
 const router = Router();
 
@@ -796,7 +797,7 @@ router.post("/:id/share-link", async (req: AuthenticatedRequest, res: Response) 
 |--------------------------------------------------------------------------
 */
 
-router.post("/:id/mark-paid", async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/mark-paid", requireStepUp("contracts.mark-paid", (req) => ({ contractId: req.params.id, ...(req.body ?? {}) })), async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 

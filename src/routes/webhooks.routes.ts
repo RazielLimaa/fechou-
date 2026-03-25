@@ -4,6 +4,7 @@ import { fetchPaymentById, getValidFreelancerAccessToken, verifyMercadoPagoWebho
 import { webhookRateLimiter } from '../middleware/security.js';
 import { distributedRateLimit } from '../middleware/distributed-security.js';
 import { markReplayToken } from '../services/securityStore.js';
+import { logSecurityEvent } from '../services/securityEvents.js';
 
 const router = Router();
 
@@ -37,6 +38,13 @@ router.post('/mercadopago', async (req, res) => {
       ttlMs: 10 * 60 * 1000,
     });
     if (replay.replay) {
+      logSecurityEvent({
+        eventName: 'webhook_replay_blocked',
+        severity: 'high',
+        requestId: (req as any).requestId ?? requestId,
+        ip: req.ip,
+        route: req.originalUrl,
+      });
       return res.status(200).json({ received: true, requestId, replay: true });
     }
   }
