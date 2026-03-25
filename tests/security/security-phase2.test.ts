@@ -4,6 +4,8 @@ import { csrfProtection } from '../../src/middleware/distributed-security.js';
 import { verifyMercadoPagoWebhookSignature } from '../../src/services/mercadoPago.js';
 import { requireStepUp } from '../../src/middleware/step-up.js';
 import { buildStepUpPayloadHash } from '../../src/services/stepUp.js';
+import { requireStepUp } from '../../src/middleware/step-up.js';
+import { buildStepUpPayloadHash } from '../../src/services/stepUp.js';
 
 function createRes() {
   const res: any = {
