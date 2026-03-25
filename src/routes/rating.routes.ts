@@ -1,9 +1,10 @@
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
 import { eq, desc } from "drizzle-orm";
+import crypto from "node:crypto";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
 import { db } from "../db/index.js";
-import { contractRatings, proposals, users } from "../db/schema.js";
+import { contractRatings, proposals } from "../db/schema.js";
 import { scoreService } from "../services/score.sevice.js";
 
 const router = Router();
@@ -12,7 +13,7 @@ const router = Router();
 
 const submitRatingSchema = z.object({
   contractId: z.number().int().positive(),
-  userId:     z.number().int().positive(),   // ID do freelancer sendo avaliado
+  publicToken: z.string().trim().length(64).regex(/^[a-f0-9]{64}$/i),
   raterName:  z.string().trim().min(2).max(120),
   stars:      z.number().int().min(1).max(5),
   comment:    z.string().trim().max(500).optional().nullable(),
@@ -27,7 +28,7 @@ router.post("/", async (req: Request, res: Response) => {
     return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
   }
 
-  const { contractId, userId, raterName, stars, comment } = parsed.data;
+  const { contractId, publicToken, raterName, stars, comment } = parsed.data;
 
   try {
     // Verifica se contrato existe e foi assinado
@@ -37,6 +38,8 @@ router.post("/", async (req: Request, res: Response) => {
         id:              proposals.id,
         contractSignedAt: proposals.contractSignedAt,
         userId:          proposals.userId,
+        shareTokenHash:  proposals.shareTokenHash,
+        shareTokenExpiresAt: proposals.shareTokenExpiresAt,
       })
       .from(proposals)
       .where(eq(proposals.id, contractId));
@@ -47,8 +50,12 @@ router.post("/", async (req: Request, res: Response) => {
     if (!proposal.contractSignedAt) {
       return res.status(422).json({ message: "O contrato precisa estar assinado para receber avaliação." });
     }
-    if (proposal.userId !== userId) {
-      return res.status(403).json({ message: "Freelancer não corresponde ao contrato." });
+    const tokenHash = crypto.createHash("sha256").update(publicToken.toLowerCase()).digest("hex");
+    if (!proposal.shareTokenHash || proposal.shareTokenHash !== tokenHash) {
+      return res.status(403).json({ message: "Token público inválido para avaliação." });
+    }
+    if (!proposal.shareTokenExpiresAt || proposal.shareTokenExpiresAt.getTime() < Date.now()) {
+      return res.status(403).json({ message: "Token público expirado para avaliação." });
     }
 
     // Idempotência — evita avaliação duplicada
@@ -66,7 +73,7 @@ router.post("/", async (req: Request, res: Response) => {
       .insert(contractRatings)
       .values({
         contractId,
-        userId,
+        userId: proposal.userId,
         raterName: raterName.trim(),
         stars,
         comment: comment?.trim() ?? null,
@@ -77,7 +84,7 @@ router.post("/", async (req: Request, res: Response) => {
     // Recalcula score do freelancer em background
     // Call whichever method your ScoreService exposes (e.g. recalculateForUser, update, etc.)
   // Recalcula score do freelancer em background
-scoreService.recalculateScore(userId).catch((err: unknown) =>
+scoreService.recalculateScore(proposal.userId).catch((err: unknown) =>
   console.error("[ratings] Erro ao recalcular score:", err)
 );
 

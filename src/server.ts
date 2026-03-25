@@ -8,10 +8,25 @@ const REQUIRED_ENV = [
   'GOOGLE_CLIENT_SECRET',
 ] as const;
 
+const REQUIRED_IN_PRODUCTION = [
+  'TOKENS_ENCRYPTION_KEY',
+  'MERCADO_PAGO_WEBHOOK_SECRET',
+  'MP_WEBHOOK_SECRET',
+] as const;
+
 for (const key of REQUIRED_ENV) {
   if (!process.env[key]) {
     console.error(`❌ Variável de ambiente obrigatória ausente: ${key}`);
     process.exit(1);
+  }
+}
+
+if (process.env.NODE_ENV === 'production') {
+  for (const key of REQUIRED_IN_PRODUCTION) {
+    if (!process.env[key]) {
+      console.error(`❌ Variável de ambiente obrigatória ausente em produção: ${key}`);
+      process.exit(1);
+    }
   }
 }
 

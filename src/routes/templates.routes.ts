@@ -10,7 +10,7 @@ router.use(authenticate);
 router.use(requirePlan("pro"));
 
 router.get("/advanced", async (req, res) => {
-  // ...
+  return res.status(501).json({ message: "Endpoint avançado ainda não implementado." });
 });
 
 const querySchema = z.object({
