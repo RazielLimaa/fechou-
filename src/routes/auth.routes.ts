@@ -77,6 +77,7 @@ const loginSchema = z.object({
 
 const googleSchema = z.object({
   code: z.string().trim().min(10).max(4096),
+  redirectUri: z.string().trim().url().max(2048).optional(),
 });
 
 const stepUpSchema = z.object({
@@ -189,7 +190,7 @@ router.post('/google', authRateLimiter, authDistributedLimiter, async (req, res)
 
   let googleUser: Awaited<ReturnType<typeof verifyGoogleCode>>;
   try {
-    googleUser = await verifyGoogleCode(parsed.data.code);
+    googleUser = await verifyGoogleCode(parsed.data.code, parsed.data.redirectUri);
   } catch (err) {
     return res.status(401).json({ message: err instanceof Error ? err.message : 'Falha no login Google.' });
   }

@@ -2,6 +2,32 @@ import crypto from 'node:crypto';
 import { sql } from 'drizzle-orm';
 import { db } from '../db/index.js';
 
+let securityTablesMissingWarned = false;
+
+function extractErrorMessage(err: unknown) {
+  return err instanceof Error ? err.message : String(err);
+}
+
+function isMissingSecurityTableError(err: unknown) {
+  const msg = extractErrorMessage(err).toLowerCase();
+  return msg.includes('security_rate_limits') && msg.includes('não existe')
+    || msg.includes('security_replay_tokens') && msg.includes('não existe')
+    || msg.includes('security_rate_limits') && msg.includes('does not exist')
+    || msg.includes('security_replay_tokens') && msg.includes('does not exist');
+}
+
+function logSecurityStoreError(scope: string, err: unknown) {
+  const msg = extractErrorMessage(err);
+  if (isMissingSecurityTableError(err)) {
+    if (!securityTablesMissingWarned) {
+      securityTablesMissingWarned = true;
+      console.warn('[securityStore] tabelas de segurança ausentes. Rode as migrations (ex: drizzle/0005_security_phase2.sql). Fallback fail-open ativo.');
+    }
+    return;
+  }
+  console.error(`[securityStore] falha (${scope}):`, msg);
+}
+
 export interface DistributedSecurityStore {
   checkRateLimit(input: {
     scope: string;
@@ -50,8 +76,7 @@ export async function checkDistributedRateLimit(input: {
       degraded: false,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[securityStore] falha no rate limit distribuído (${input.scope}):`, msg);
+    logSecurityStoreError(`rate-limit:${input.scope}`, err);
     return {
       // fail-open temporário para não derrubar a API quando o banco cai
       allowed: true,
@@ -97,8 +122,7 @@ export async function markReplayToken(input: {
       degraded: false,
     };
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error(`[securityStore] falha ao marcar replay token (${input.scope}):`, msg);
+    logSecurityStoreError(`replay:${input.scope}`, err);
     return {
       // degradação controlada: evita indisponibilidade total em caso de pane de DB
       replay: false,
@@ -115,8 +139,7 @@ export async function cleanupSecurityStore() {
     await db.execute(sql`DELETE FROM security_replay_tokens WHERE expires_at < ${now}`);
     await db.execute(sql`DELETE FROM security_rate_limits WHERE updated_at < ${oldRateLimitThreshold}`);
   } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    console.error('[securityStore] falha na limpeza periódica:', msg);
+    logSecurityStoreError('cleanup', err);
   }
 }
 
