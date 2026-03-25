@@ -2,16 +2,42 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { authRateLimiter } from '../middleware/security.js';
-import { authenticate, signAccessToken, type AuthenticatedRequest } from '../middleware/auth.js';
+import { distributedRateLimit, issueCsrfToken } from '../middleware/distributed-security.js';
+import { authenticate, signAccessToken, type AuthenticatedRequest, verifyGoogleCode } from '../middleware/auth.js';
 import { storage } from '../storage.js';
+import { db } from '../db/index.js';
+import { createRefreshToken, rotateRefreshToken, revokeRefreshToken } from '../services/token.js';
 
 const router = Router();
+const authDistributedLimiter = distributedRateLimit({
+  scope: 'auth',
+  limit: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 15),
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+});
 
-// ── Google OAuth ──────────────────────────────────────────────────────────────
-const GOOGLE_CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
+const ACCESS_COOKIE = 'access_token';
+const REFRESH_COOKIE = 'refresh_token';
 
-if (!GOOGLE_CLIENT_ID) {
-  throw new Error('GOOGLE_CLIENT_ID é obrigatório no .env');
+function accessCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    path: '/',
+    maxAge: 15 * 60 * 1000,
+  };
+}
+
+function refreshCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    path: '/api/auth',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
 }
 
 // ── Tipo mínimo de usuário ────────────────────────────────────────────────────
@@ -40,13 +66,12 @@ const loginSchema = z.object({
 });
 
 const googleSchema = z.object({
-  // flow: "implicit" entrega access_token diretamente — sem redirect_uri_mismatch
-  access_token: z.string().trim().min(1).max(2048),
+  code: z.string().trim().min(10).max(4096),
 });
 
 // ── POST /register ────────────────────────────────────────────────────────────
 
-router.post('/register', async (req, res) => {
+router.post('/register', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -68,13 +93,24 @@ router.post('/register', async (req, res) => {
   });
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
-  return res.status(201).json({ user, token });
+  return res.status(201).json({ user, token, csrfToken });
 });
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 
-router.post('/login', async (req, res) => {
+router.post('/login', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -101,81 +137,45 @@ router.post('/login', async (req, res) => {
   }
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
   return res.json({
     token,
+    csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
 });
 
 // ── POST /google ──────────────────────────────────────────────────────────────
-// Usa flow "implicit": o frontend envia um access_token (não um code).
-// O backend verifica o token diretamente na API do Google — sem redirect_uri.
-
-router.post('/google', async (req, res) => {
+// Authorization Code flow no backend (sem aceitar access_token do frontend).
+router.post('/google', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = googleSchema.safeParse(req.body);
 
   if (!parsed.success) {
-    return res.status(400).json({ message: 'access_token inválido.' });
+    return res.status(400).json({ message: 'code inválido.' });
   }
 
-  const { access_token } = parsed.data;
-
-  // 1. Verifica o access_token na API do Google e obtém o perfil do usuário
-  let profile: {
-    sub: string;
-    email: string;
-    email_verified: boolean;
-    name?: string;
-    picture?: string;
-  };
-
+  let googleUser: Awaited<ReturnType<typeof verifyGoogleCode>>;
   try {
-    const googleRes = await fetch(
-      'https://www.googleapis.com/oauth2/v3/userinfo',
-      { headers: { Authorization: `Bearer ${access_token}` } }
-    );
-
-    if (!googleRes.ok) {
-      throw new Error(`Google userinfo retornou ${googleRes.status}`);
-    }
-
-    profile = await googleRes.json();
+    googleUser = await verifyGoogleCode(parsed.data.code);
   } catch (err) {
-    console.error('[/google] userinfo falhou:', err instanceof Error ? err.message : err);
-    return res.status(400).json({ message: 'Falha ao verificar autenticação com o Google.' });
+    return res.status(401).json({ message: err instanceof Error ? err.message : 'Falha no login Google.' });
   }
 
-  // 2. Validações do perfil
-  if (!profile.email_verified) {
-    return res.status(400).json({ message: 'Email do Google não verificado.' });
-  }
-  if (!profile.email || !profile.sub) {
-    return res.status(400).json({ message: 'Dados insuficientes retornados pelo Google.' });
-  }
-
-  // 3. SEGURANÇA: verifica se o token pertence ao nosso app
-  // O campo "aud" (audience) não vem no userinfo — verificamos o tokeninfo
-  try {
-    const tokenInfo = await fetch(
-      `https://www.googleapis.com/oauth2/v3/tokeninfo?access_token=${access_token}`
-    );
-    const info = await tokenInfo.json();
-
-    // Garante que o token foi emitido para o nosso Client ID
-    if (info.aud !== GOOGLE_CLIENT_ID && info.azp !== GOOGLE_CLIENT_ID) {
-      console.error('[/google] token não pertence ao app. aud:', info.aud);
-      return res.status(401).json({ message: 'Token não autorizado.' });
-    }
-  } catch (err) {
-    console.error('[/google] tokeninfo falhou:', err instanceof Error ? err.message : err);
-    return res.status(400).json({ message: 'Não foi possível validar o token.' });
-  }
-
-  const googleEmail = profile.email.toLowerCase();
-  const googleId    = profile.sub;
-  const googleName  = profile.name ?? googleEmail.split('@')[0];
-  const avatarUrl   = profile.picture ?? null;
+  const googleEmail = googleUser.email.toLowerCase();
+  const googleId    = googleUser.googleId;
+  const googleName  = googleUser.name ?? googleEmail.split('@')[0];
+  const avatarUrl   = googleUser.avatarUrl ?? null;
 
   // 4. Upsert do usuário
   let user: MinimalUser;
@@ -200,11 +200,70 @@ router.post('/google', async (req, res) => {
   }
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
   return res.status(200).json({
     token,
+    csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
+});
+
+router.post('/refresh', authDistributedLimiter, async (req, res) => {
+  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? req.body?.refreshToken ?? '').trim();
+  if (!currentRefresh) {
+    return res.status(401).json({ message: 'Sessão expirada.' });
+  }
+
+  try {
+    const rotated = await rotateRefreshToken(db as any, currentRefresh, {
+      userAgent: String(req.headers['user-agent'] ?? ''),
+      ipAddress: req.ip,
+    });
+
+    const user = await storage.findUserById(rotated.userId);
+    if (!user) return res.status(401).json({ message: 'Sessão inválida.' });
+
+    const accessToken = signAccessToken({ id: user.id, email: user.email });
+    res.cookie(ACCESS_COOKIE, accessToken, accessCookieOptions());
+    res.cookie(REFRESH_COOKIE, rotated.newRawToken, refreshCookieOptions());
+    const csrfToken = issueCsrfToken(req, res);
+
+    return res.status(200).json({
+      token: accessToken,
+      csrfToken,
+      user,
+    });
+  } catch {
+    return res.status(401).json({ message: 'Sessão inválida ou revogada.' });
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
+  if (currentRefresh) {
+    await revokeRefreshToken(db as any, currentRefresh);
+  }
+
+  res.clearCookie(ACCESS_COOKIE, { path: '/' });
+  res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+  res.clearCookie('csrf_token', { path: '/' });
+  return res.status(200).json({ ok: true });
+});
+
+router.get('/csrf', authenticate, async (req, res) => {
+  const csrfToken = issueCsrfToken(req, res);
+  return res.status(200).json({ csrfToken });
 });
 
 // ── GET /me ───────────────────────────────────────────────────────────────────

@@ -17,24 +17,11 @@ import { sensitiveRateLimiter } from '../middleware/security.js';
 const router = Router();
 router.use(sensitiveRateLimiter);
 
-const oauthStateStore = new Map<string, { userId: number; expiresAt: number }>();
+const STATE_COOKIE = 'mp_oauth_state';
 const STATE_TTL_MS = 10 * 60 * 1000;
 const apiKeySchema = z.object({
   accessToken: z.string().trim().min(20).max(300)
 });
-
-function createOAuthState(userId: number) {
-  const state = crypto.randomBytes(24).toString('hex');
-  oauthStateStore.set(state, { userId, expiresAt: Date.now() + STATE_TTL_MS });
-  return state;
-}
-
-function consumeOAuthState(state: string) {
-  const value = oauthStateStore.get(state);
-  oauthStateStore.delete(state);
-  if (!value || value.expiresAt < Date.now()) return null;
-  return value;
-}
 
 router.get('/connect', authenticateOrMvp, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
@@ -42,7 +29,14 @@ router.get('/connect', authenticateOrMvp, async (req: AuthenticatedRequest, res)
     return res.status(401).json({ message: 'Não autenticado.' });
   }
 
-  const state = createOAuthState(userId);
+  const state = crypto.randomBytes(24).toString('hex');
+  res.cookie(STATE_COOKIE, `${userId}:${state}`, {
+    httpOnly: true,
+    secure: process.env.NODE_ENV === 'production',
+    sameSite: 'lax',
+    maxAge: STATE_TTL_MS,
+    path: '/api/mercadopago/callback',
+  });
   const redirect = buildOAuthAuthorizationUrl(state);
   return res.redirect(302, redirect);
 });
@@ -55,8 +49,11 @@ router.get('/callback', async (req, res) => {
     return res.status(400).json({ message: 'Parâmetros code/state são obrigatórios.' });
   }
 
-  const statePayload = consumeOAuthState(state);
-  if (!statePayload) {
+  const cookieValue = String(req.cookies?.[STATE_COOKIE] ?? '');
+  res.clearCookie(STATE_COOKIE, { path: '/api/mercadopago/callback' });
+  const [userIdRaw, expectedState] = cookieValue.split(':');
+  const userId = Number(userIdRaw);
+  if (!Number.isInteger(userId) || userId <= 0 || !expectedState || expectedState !== state) {
     return res.status(400).json({ message: 'State inválido ou expirado.' });
   }
 
@@ -65,7 +62,7 @@ router.get('/callback', async (req, res) => {
     const expiresAt = new Date(Date.now() + oauth.expires_in * 1000);
 
     await storage.upsertMercadoPagoAccount({
-      userId: statePayload.userId,
+      userId,
       mpUserId: oauth.user_id ? String(oauth.user_id) : null,
       authMethod: 'oauth',
       accessToken: encryptToken(oauth.access_token),

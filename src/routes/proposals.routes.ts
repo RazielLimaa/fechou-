@@ -1,8 +1,10 @@
-import { Router, type Request, type Response, type NextFunction } from "express";
+import { Router, type Request, type Response } from "express";
 import crypto from "crypto";
 import { z } from "zod";
+import { rateLimit } from "express-rate-limit";
 import { and, eq, sql } from "drizzle-orm";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
+import { distributedRateLimit } from "../middleware/distributed-security.js";
 import { storage, type ProposalStatus } from "../storage.js";
 import { db } from "../db/index.js";
 import { contracts } from "../db/schema.js";
@@ -66,37 +68,48 @@ function getBaseUrlFromRequest(req: Request): string {
   return `${proto}://${host}`;
 }
 
-type RateState = { count: number; resetAt: number };
-const rateMap = new Map<string, RateState>();
+const publicProposalGetLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 60,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
+});
 
-function cleanupRateMap(now: number) {
-  if (rateMap.size < 5000) return;
-  for (const [k, v] of rateMap.entries()) {
-    if (v.resetAt <= now) rateMap.delete(k);
-  }
-}
+const publicProposalSignLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 5,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
+});
 
-function rateLimit(keyPrefix: string, limit: number, windowMs: number) {
-  return (req: Request, res: Response, next: NextFunction) => {
-    const now = Date.now();
-    cleanupRateMap(now);
-    const ip = String(req.ip ?? "unknown");
-    const key = `${keyPrefix}:${ip}`;
-    const state = rateMap.get(key);
-    if (!state || state.resetAt <= now) {
-      rateMap.set(key, { count: 1, resetAt: now + windowMs });
-      return next();
-    }
-    if (state.count >= limit) {
-      const retryAfterSec = Math.max(1, Math.ceil((state.resetAt - now) / 1000));
-      res.setHeader("Retry-After", String(retryAfterSec));
-      return res.status(429).json({ message: "Muitas requisições. Tente novamente em alguns instantes." });
-    }
-    state.count += 1;
-    rateMap.set(key, state);
-    return next();
-  };
-}
+const proposalCancelLimiter = rateLimit({
+  windowMs: 10 * 60 * 1000,
+  max: 10,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
+});
+
+const distributedPublicGetLimiter = distributedRateLimit({
+  scope: 'public-proposal-get',
+  limit: 60,
+  windowMs: 10 * 60 * 1000,
+});
+
+const distributedPublicSignLimiter = distributedRateLimit({
+  scope: 'public-proposal-sign',
+  limit: 5,
+  windowMs: 10 * 60 * 1000,
+});
+
+const distributedCancelLimiter = distributedRateLimit({
+  scope: 'proposal-cancel',
+  limit: 10,
+  windowMs: 10 * 60 * 1000,
+  key: (req) => `${req.ip}:${req.params.id ?? ''}`,
+});
 
 /**
  * =============================
@@ -147,7 +160,8 @@ const markPaidSchema = z.object({
 
 router.get(
   "/public/:token",
-  rateLimit("public-proposal-get", 60, 10 * 60 * 1000),
+  publicProposalGetLimiter,
+  distributedPublicGetLimiter,
   async (req: Request, res: Response) => {
     setPublicNoCache(res);
 
@@ -213,7 +227,8 @@ router.get(
 
 router.post(
   "/public/:token/sign",
-  rateLimit("public-proposal-sign", 5, 10 * 60 * 1000),
+  publicProposalSignLimiter,
+  distributedPublicSignLimiter,
   async (req: Request, res: Response) => {
     setPublicNoCache(res);
 
@@ -428,7 +443,8 @@ router.get("/:id", async (req: AuthenticatedRequest, res: Response) => {
 
 router.patch(
   "/:id/cancel",
-  rateLimit("cancel-proposal", 10, 10 * 60 * 1000),
+  proposalCancelLimiter,
+  distributedCancelLimiter,
   async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ message: "Não autenticado." });

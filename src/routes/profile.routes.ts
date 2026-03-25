@@ -71,7 +71,6 @@ async function buildPublicProfile(userId: number) {
   return {
     userId:      user.id,
     name:        profile?.displayName ?? user.name,
-    email:       profile ? undefined : user.email, 
     bio:         profile?.bio ?? null,
     avatarUrl:   profile?.avatarUrl ?? null,
     profession:  profile?.profession ?? null,
@@ -228,20 +227,6 @@ router.get("/public/:slugOrId", async (req: Request, res: Response) => {
         }
       }
 
-      
-      if (!userId) {
-        const allUsers = await db
-          .select({ id: users.id, name: users.name })
-          .from(users);
-
-        const match = allUsers.find(
-          (u) => u.name.toLowerCase().replace(/\s+/g, "") === cleanSlug
-            || u.name.toLowerCase().replace(/\s+/g, "-") === cleanSlug
-            || u.name.toLowerCase().replace(/\s+/g, "_") === cleanSlug
-        );
-
-        if (match) userId = match.id;
-      }
     }
 
     if (!userId) return res.status(404).json({ message: "Perfil não encontrado." });
@@ -253,8 +238,7 @@ router.get("/public/:slugOrId", async (req: Request, res: Response) => {
       return res.status(403).json({ message: "Este perfil é privado." });
     }
 
-    const { email: _email, ...publicProfile } = profile as any;
-    return res.json(publicProfile);
+    return res.json(profile);
   } catch (err: any) {
     console.error("[profile GET /public]", err?.message ?? err);
     return res.status(500).json({ message: "Erro ao carregar perfil." });

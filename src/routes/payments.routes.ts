@@ -10,6 +10,7 @@ import {
 } from "../services/mercadoPago.js";
 import { mpSubscriptionService, type MpPlanId } from "../services/Mercadopago subscriptions.service.js";
 import { requirePlan } from "../middleware/requirePlan.js";
+import { markReplayToken } from "../services/securityStore.js";
 
 const router = Router();
 
@@ -298,6 +299,18 @@ router.get("/me", authenticate, async (req: AuthenticatedRequest, res) => {
 // ─── WEBHOOK DO MERCADO PAGO ──────────────────────────────────────────────────
 
 router.post("/webhook", async (req, res) => {
+  const requestId = String(req.header("x-request-id") ?? "");
+  if (requestId) {
+    const replay = await markReplayToken({
+      scope: "mp-payments-webhook-request",
+      token: requestId,
+      ttlMs: 10 * 60 * 1000,
+    });
+    if (replay.replay) {
+      return res.status(200).json({ received: true, replay: true });
+    }
+  }
+
   const xSignature  = req.header("x-signature");
   const xRequestId  = req.header("x-request-id");
   const dataId =

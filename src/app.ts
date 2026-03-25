@@ -1,4 +1,5 @@
 import express from 'express';
+import crypto from 'node:crypto';
 import cors, { type CorsOptions } from 'cors';
 import helmet from 'helmet';
 import cookieParser from 'cookie-parser';
@@ -19,6 +20,7 @@ import clausesRoutes from './routes/clauses.routes.js';
 import profileRoutes from './routes/profile.routes.js';
 import scoreRoutes from './routes/score.routes.js';
 import ratingRoutes from './routes/rating.routes.js';
+import { csrfProtection } from './middleware/distributed-security.js';
 
 const app = express();
 
@@ -89,6 +91,13 @@ app.options(/.*/, cors(corsOptions));
 
 app.use(cookieParser());
 
+app.use((req, res, next) => {
+  const requestId = req.header('x-request-id')?.trim() || crypto.randomUUID();
+  res.setHeader('x-request-id', requestId);
+  (req as any).requestId = requestId;
+  next();
+});
+
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
 
 app.use('/api/proposals/public', express.json({ limit: '4mb' }));
@@ -96,6 +105,24 @@ app.use('/api/contracts/public', express.json({ limit: '4mb' }));
 app.use(express.json({ limit: '25mb' }));
 
 app.use(sanitizeRequestBody);
+app.use(
+  csrfProtection({
+    allowedOrigins,
+    exemptPaths: [
+      '/api/health',
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/auth/google',
+      '/api/auth/refresh',
+      '/api/auth/logout',
+      '/api/webhooks/',
+      '/api/payments/webhook',
+      '/api/proposals/public/',
+      '/api/payments/public/',
+      '/api/mercadopago/callback',
+    ],
+  })
+);
 app.use('/api', apiRateLimiter);
 
 app.get('/health', (_req, res) => {
@@ -105,6 +132,23 @@ app.get('/health', (_req, res) => {
 app.get('/api/health', (_req, res) => {
   res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
+
+// Rotas de deception/honeypot (isoladas, sem acesso a serviços reais)
+const deceptionRoutes = ['/admin', '/wp-admin', '/phpmyadmin', '/internal', '/debug', '/api/internal/status', '/api/admin/login'];
+for (const path of deceptionRoutes) {
+  app.all(path, (req, res) => {
+    console.warn(JSON.stringify({
+      event: 'deception_route_hit',
+      severity: 'high',
+      requestId: (req as any).requestId ?? null,
+      route: req.originalUrl,
+      method: req.method,
+      ip: req.ip,
+      ua: String(req.headers['user-agent'] ?? 'unknown').slice(0, 200),
+    }));
+    return res.status(404).json({ message: 'Not found' });
+  });
+}
 
 app.use('/api/auth', authRoutes);
 app.use('/api/proposals', proposalsRoutes);
