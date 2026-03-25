@@ -12,6 +12,20 @@ CREATE TABLE IF NOT EXISTS security_replay_tokens (
   created_at timestamp NOT NULL DEFAULT now()
 );
 
+CREATE TABLE IF NOT EXISTS security_stepup_tokens (
+  token_hash varchar(128) PRIMARY KEY,
+  user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  scope varchar(120) NOT NULL,
+  payload_hash varchar(128) NOT NULL,
+  expires_at timestamp NOT NULL,
+  used_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_replay_tokens_expires_at ON security_replay_tokens(expires_at);
+CREATE INDEX IF NOT EXISTS idx_security_rate_limits_updated_at ON security_rate_limits(updated_at);
+CREATE INDEX IF NOT EXISTS idx_security_stepup_tokens_user_scope_expires ON security_stepup_tokens(user_id, scope, expires_at);
+
 -- Refresh token hardening columns
 ALTER TABLE refresh_tokens
   ADD COLUMN IF NOT EXISTS last_used_at timestamp with time zone,

@@ -22,7 +22,8 @@ const subscriptionCheckoutSchema = z.object({
 });
 
 const confirmSubscriptionSchema = z.object({
-  preapprovalId: z.string().trim().min(4),
+  preapprovalId: z.string().trim().min(4).max(120).optional(),
+  externalReference: z.string().trim().min(4).max(200).optional(),
 });
 
 const publicMercadoPagoCheckoutSchema = z.object({
@@ -171,7 +172,12 @@ router.post("/subscriptions/confirm", authenticate, async (req: AuthenticatedReq
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const { preapprovalId, externalReference } = req.body ?? {};
+  const parsedBody = confirmSubscriptionSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
+  }
+
+  const { preapprovalId, externalReference } = parsedBody.data;
 
   try {
     let preapproval: any = null;

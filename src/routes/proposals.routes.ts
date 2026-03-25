@@ -18,6 +18,7 @@ import {
   sha256Hex,
 } from "../lib/signatureCrypto.js";
 import { contractService } from "../services/contracts/contract.service.js";
+import { requireStepUp } from "../middleware/step-up.js";
 
 const router = Router();
 
@@ -474,7 +475,7 @@ router.patch(
   }
 );
 
-router.post("/:id/mark-paid", async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/mark-paid", requireStepUp("payments.mark-paid", (req) => ({ proposalId: req.params.id, ...(req.body ?? {}) })), async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 

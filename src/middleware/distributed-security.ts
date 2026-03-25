@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
-import { checkDistributedRateLimit } from '../services/securityStore.js';
+import { checkDistributedRateLimit, cleanupSecurityStore } from '../services/securityStore.js';
 
 function getClientIp(req: Request) {
   return String(req.ip ?? req.headers['x-forwarded-for'] ?? 'unknown').split(',')[0].trim();
@@ -13,6 +13,9 @@ export function distributedRateLimit(options: {
   key?: (req: Request) => string;
 }) {
   return async (req: Request, res: Response, next: NextFunction) => {
+    if (Math.random() < 0.005) {
+      void cleanupSecurityStore();
+    }
     const key = options.key ? options.key(req) : getClientIp(req);
 
     const result = await checkDistributedRateLimit({
