@@ -15,6 +15,13 @@
       "when": 1773366979553,
       "tag": "0004_contracts_module",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1774078190809,
+      "tag": "0002_heavy_typhoid_mary",
+      "breakpoints": true
     }
   ]
 }

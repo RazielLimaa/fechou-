@@ -4,58 +4,25 @@ import { z } from "zod";
 import { authenticate, type AuthenticatedRequest } from "../middleware/auth.js";
 import { storage } from "../storage.js";
 import {
-  centsToDecimal,
-  decimalToCents,
-  defaultCurrency,
-  stripe,
-  stripeWebhookSecret,
-} from "../services/stripe.js";
-import {
   createMercadoPagoPreference,
   fetchMercadoPagoPayment,
   verifyMercadoPagoWebhookSignature,
 } from "../services/mercadoPago.js";
+import { mpSubscriptionService, type MpPlanId } from "../services/Mercadopago subscriptions.service.js";
 import { requirePlan } from "../middleware/requirePlan.js";
 
 const router = Router();
 
-type PlanId = "free" | "pro" | "premium";
-
-router.post(
-  "/some-premium-feature",
-  authenticate,
-  requirePlan("premium"),
-  async (req, res) => {
-    // ...
-  }
-);
-
-const checkoutSchema = z.object({
-  successUrl: z.string().url(),
-  cancelUrl: z.string().url(),
-  clientEmail: z.string().email().max(180).optional(),
-});
+// ─── Schemas ──────────────────────────────────────────────────────────────────
 
 const subscriptionCheckoutSchema = z.object({
-  successUrl: z.string().url(),
-  cancelUrl: z.string().url(),
+  planId:   z.enum(["pro", "premium"]),
+  backUrl:  z.string().url().optional(),
 });
 
 const confirmSubscriptionSchema = z.object({
-  sessionId: z.string().trim().min(8),
+  preapprovalId: z.string().trim().min(4),
 });
-
-function ensureStripeSessionIdOnSuccessUrl(successUrl: string) {
-  try {
-    const parsed = new URL(successUrl);
-    if (!parsed.searchParams.get("session_id")) {
-      parsed.searchParams.set("session_id", "{CHECKOUT_SESSION_ID}");
-    }
-    return parsed.toString();
-  } catch {
-    return successUrl;
-  }
-}
 
 const publicMercadoPagoCheckoutSchema = z.object({
   successUrl: z.string().url(),
@@ -64,14 +31,17 @@ const publicMercadoPagoCheckoutSchema = z.object({
   payerEmail: z.string().email().max(180).optional(),
 });
 
-function getRequiredIdempotencyKey(headerValue: string | undefined) {
-  if (!headerValue || headerValue.trim().length < 12) return null;
-  return headerValue.trim();
-}
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function hashSha256(value: string) {
   return crypto.createHash("sha256").update(value).digest("hex");
 }
+
+function planFromPreapprovalStatus(status: string, planId: MpPlanId): MpPlanId | "free" {
+  return mpSubscriptionService.isActiveStatus(status) ? planId : "free";
+}
+
+// ─── PAGAMENTO DE PROPOSTA (one-time via MP — mantido) ────────────────────────
 
 router.post("/public/:token/checkout", async (req, res) => {
   const parsed = publicMercadoPagoCheckoutSchema.safeParse(req.body);
@@ -80,9 +50,7 @@ router.post("/public/:token/checkout", async (req, res) => {
   }
 
   const token = String(req.params.token ?? "").trim();
-  if (token.length < 32) {
-    return res.status(400).json({ message: "Token inválido." });
-  }
+  if (token.length < 32) return res.status(400).json({ message: "Token inválido." });
 
   const tokenHash = hashSha256(token);
   const proposal = await storage.getProposalByShareTokenHash(tokenHash);
@@ -99,651 +67,314 @@ router.post("/public/:token/checkout", async (req, res) => {
     return res.status(409).json({ message: "Proposta já paga." });
   }
 
-  const requestIdempotency = req.header("X-Idempotency-Key")?.trim();
-  const idempotencyKey = requestIdempotency && requestIdempotency.length >= 12
-    ? requestIdempotency
-    : crypto.randomUUID();
+  const idempotencyKey = req.header("X-Idempotency-Key")?.trim() ?? crypto.randomUUID();
 
   const webhookUrl = process.env.MERCADO_PAGO_WEBHOOK_URL;
-  if (!webhookUrl) {
-    return res.status(500).json({ message: "Webhook do Mercado Pago não configurado." });
-  }
+  if (!webhookUrl) return res.status(500).json({ message: "Webhook do Mercado Pago não configurado." });
 
   const preference = await createMercadoPagoPreference({
     externalReference: `proposal:${proposal.id}:owner:${proposal.userId}:token:${tokenHash.slice(0, 20)}`,
-    payerEmail: parsed.data.payerEmail,
+    payerEmail:   parsed.data.payerEmail,
     notificationUrl: webhookUrl,
-    successUrl: parsed.data.successUrl,
-    failureUrl: parsed.data.failureUrl,
-    pendingUrl: parsed.data.pendingUrl,
+    successUrl:   parsed.data.successUrl,
+    failureUrl:   parsed.data.failureUrl,
+    pendingUrl:   parsed.data.pendingUrl,
     idempotencyKey,
     item: {
-      id: String(proposal.id),
-      title: `Contrato #${proposal.id} - ${proposal.title}`,
+      id:          String(proposal.id),
+      title:       `Contrato #${proposal.id} - ${proposal.title}`,
       description: proposal.description.slice(0, 250),
-      quantity: 1,
+      quantity:    1,
       currency_id: "BRL",
-      unit_price: Number(proposal.value),
+      unit_price:  Number(proposal.value),
     },
   });
 
   await storage.createPaymentSession({
-    userId: proposal.userId,
+    userId:    proposal.userId,
     proposalId: proposal.id,
-    mode: "payment",
-    stripeSessionId: `mp_pref_${preference.id}`,
-    mercadoPagoPreferenceId: preference.id,
-    amount: Number(proposal.value).toFixed(2),
-    currency: "brl",
-    metadata: {
-      kind: "proposal_payment_mercado_pago",
-      tokenHash: tokenHash.slice(0, 20),
-    },
+    mode:      "payment",
+    stripeSessionId:          `mp_pref_${preference.id}`,
+    mercadoPagoPreferenceId:  preference.id,
+    amount:    Number(proposal.value).toFixed(2),
+    currency:  "brl",
+    metadata:  { kind: "proposal_payment_mercado_pago", tokenHash: tokenHash.slice(0, 20) },
   });
 
-  return res.status(201).json({
-    checkoutUrl: preference.init_point,
-    preferenceId: preference.id,
-  });
+  return res.status(201).json({ checkoutUrl: preference.init_point, preferenceId: preference.id });
 });
 
-/**
- * ✅ STATUS "ativo" para liberar features
- * Recomendo: active + trialing (você pode ajustar)
- */
-function isActiveSubscriptionStatus(status: string | null | undefined) {
-  return status === "active" || status === "trialing";
-}
+// ─── ASSINATURA DE PLANO via MP Preapproval ───────────────────────────────────
 
 /**
- * ✅ priceId -> planId (fonte de verdade)
+ * POST /api/payments/subscriptions/checkout
+ * body: { planId: "pro" | "premium", backUrl?: string }
+ *
+ * Retorna { checkoutUrl } — redirecione o usuário para lá.
+ * Após assinar, o MP redireciona para backUrl e manda webhook.
  */
-function planFromPriceId(priceId: string | null | undefined): PlanId {
-  if (!priceId) return "free";
+router.post("/subscriptions/checkout", authenticate, async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const proPriceId = process.env.STRIPE_MONTHLY_PLAN_PRICE_ID;
-  const premiumPriceId = process.env.STRIPE_MONTHLY_PLAN2_PRICE_ID;
-
-  if (premiumPriceId && priceId === premiumPriceId) return "premium";
-  if (proPriceId && priceId === proPriceId) return "pro";
-  return "free";
-}
-
-/**
- * ✅ planId do frontend -> Stripe PRICE ID no .env
- * IMPORTANTE: deve ser price_... (não prod_...)
- */
-function getSubscriptionPriceIdByPlanId(planId: string) {
-  const proPriceId = process.env.STRIPE_MONTHLY_PLAN_PRICE_ID;
-  const premiumPriceId = process.env.STRIPE_MONTHLY_PLAN2_PRICE_ID;
-
-  const map: Record<string, string | undefined> = {
-    pro: proPriceId,
-    premium: premiumPriceId,
-  };
-
-  return map[planId];
-}
-
-// ✅ Tipos para TS não reclamar
-type SubscriptionCheckoutOk = {
-  ok: true;
-  session: { id: string; url: string | null };
-};
-
-type SubscriptionCheckoutErr = {
-  ok: false;
-  status: number;
-  body: any;
-};
-
-type SubscriptionCheckoutResult = SubscriptionCheckoutOk | SubscriptionCheckoutErr;
-
-async function createSubscriptionCheckoutSession(args: {
-  userId: number;
-  planId: string;
-  idempotencyKey: string;
-  successUrl: string;
-  cancelUrl: string;
-}): Promise<SubscriptionCheckoutResult> {
-  const { userId, planId, idempotencyKey, successUrl, cancelUrl } = args;
-
-  const priceId = getSubscriptionPriceIdByPlanId(planId);
-  if (!priceId) {
-    return {
-      ok: false,
-      status: 400,
-      body: { message: "Plano inválido ou não configurado.", details: { planId } },
-    };
+  const parsed = subscriptionCheckoutSchema.safeParse(req.body);
+  if (!parsed.success) {
+    return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
   }
 
   const user = await storage.findUserById(userId);
-  if (!user) {
-    return { ok: false, status: 404, body: { message: "Usuário não encontrado." } };
-  }
+  if (!user) return res.status(404).json({ message: "Usuário não encontrado." });
 
-  // garante customer
-  const stripeCustomerId =
-    user.stripeCustomerId ?? (await stripe.customers.create({ email: user.email, name: user.name })).id;
-
-  if (!user.stripeCustomerId) {
-    await storage.setUserStripeCustomerId(user.id, stripeCustomerId);
-  }
-
-  // ✅ garante session_id no retorno
-  const safeSuccessUrl = ensureStripeSessionIdOnSuccessUrl(successUrl);
-
-  const session = await stripe.checkout.sessions.create(
-    {
-      mode: "subscription",
-      customer: stripeCustomerId,
-      line_items: [{ price: priceId, quantity: 1 }],
-
-      // metadata no subscription é útil nos events customer.subscription.*
-      subscription_data: {
-        metadata: {
-          kind: "platform_subscription",
-          userId: String(user.id),
-          planId,
-          priceId,
-        },
-      },
-
-      metadata: {
-        kind: "platform_subscription",
-        userId: String(user.id),
-        planId,
-        priceId,
-      },
-
-      success_url: ensureStripeSessionIdOnSuccessUrl(successUrl),
-      cancel_url: cancelUrl,
-    },
-    { idempotencyKey }
-  );
-
-  await storage.createPaymentSession({
-    userId,
-    mode: "subscription",
-    stripeSessionId: session.id,
-    stripeSubscriptionId: typeof session.subscription === "string" ? session.subscription : undefined,
-    amount: "0.00",
-    currency: defaultCurrency,
-    metadata: {
-      kind: "platform_subscription_checkout",
-      planId,
-      priceId,
-    },
-  });
-
-  return { ok: true, session: { id: session.id, url: session.url } };
-}
-
-async function refreshSubscriptionFromStripeIfNeeded(userId: number) {
   try {
-    const user = await storage.findUserById(userId);
-    if (!user?.stripeCustomerId) return null;
-
-    const subscriptions = await stripe.subscriptions.list({
-      customer: user.stripeCustomerId,
-      status: "all",
-      limit: 10,
-    });
-
-    const preferred = subscriptions.data.find((sub) => isActiveSubscriptionStatus(sub.status)) ?? subscriptions.data[0];
-    if (!preferred) return null;
-
-    const priceId = preferred.items.data[0]?.price?.id;
-    if (!priceId) return null;
-
-    return storage.upsertUserSubscription({
+    const result = await mpSubscriptionService.createSubscription({
       userId,
-      stripeSubscriptionId: preferred.id,
-      stripeCustomerId: String(preferred.customer),
-      stripePriceId: priceId,
-      status: preferred.status,
-      currentPeriodEnd: preferred.current_period_end ? new Date(preferred.current_period_end * 1000) : null,
-      cancelAtPeriodEnd: Boolean(preferred.cancel_at_period_end),
+      userEmail: user.email,
+      userName:  user.name,
+      planId:    parsed.data.planId as MpPlanId,
+      backUrl:   parsed.data.backUrl,
     });
-  } catch {
-    return null;
-  }
-}
 
-/**
- * Pagamento de proposta (mode=payment)
- */
-router.post("/proposals/:id/checkout", authenticate, async (req: AuthenticatedRequest, res) => {
-  const idempotencyKey = getRequiredIdempotencyKey(req.header("Idempotency-Key"));
-  if (!idempotencyKey) {
-    return res.status(400).json({ message: "Header Idempotency-Key é obrigatório." });
-  }
-
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: "Não autenticado." });
-
-  const proposalId = Number(req.params.id);
-  if (!Number.isInteger(proposalId) || proposalId <= 0) {
-    return res.status(400).json({ message: "ID da proposta inválido." });
-  }
-
-  const parsedBody = checkoutSchema.safeParse(req.body);
-  if (!parsedBody.success) {
-    return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
-  }
-
-  const proposal = await storage.getProposalById(userId, proposalId);
-  if (!proposal) return res.status(404).json({ message: "Proposta não encontrada." });
-  if (proposal.status === "vendida") return res.status(409).json({ message: "Esta proposta já foi paga." });
-
-  const proposalAmount = Number(proposal.value);
-  const amountInCents = decimalToCents(proposalAmount);
-
-  const checkoutSession = await stripe.checkout.sessions.create(
-    {
-      mode: "payment",
-      currency: defaultCurrency,
-      client_reference_id: `proposal:${proposal.id}:owner:${userId}`,
-      customer_email: parsedBody.data.clientEmail,
-      line_items: [
-        {
-          quantity: 1,
-          price_data: {
-            currency: defaultCurrency,
-            unit_amount: amountInCents,
-            product_data: {
-              name: `Proposta #${proposal.id} - ${proposal.title}`,
-              description: proposal.description.slice(0, 300),
-            },
-          },
-        },
-      ],
-      payment_intent_data: {
-        metadata: {
-          kind: "proposal_payment",
-          proposalId: String(proposal.id),
-          userId: String(userId),
-        },
-      },
+    // Persiste a sessão para rastreamento
+    await storage.createPaymentSession({
+      userId,
+      mode:           "subscription",
+      stripeSessionId: `mp_sub_${userId}_${Date.now()}`,
+      amount:         "0.00",
+      currency:       "brl",
       metadata: {
-        kind: "proposal_payment",
-        proposalId: String(proposal.id),
-        userId: String(userId),
+        kind:             "mp_subscription_checkout",
+        planId:           parsed.data.planId,
+        externalReference: result.externalReference,
       },
-      success_url: parsedBody.data.successUrl,
-      cancel_url: parsedBody.data.cancelUrl,
-    },
-    { idempotencyKey }
-  );
+    });
 
-  await storage.createPaymentSession({
-    userId,
-    proposalId,
-    mode: "payment",
-    stripeSessionId: checkoutSession.id,
-    stripePaymentIntentId:
-      typeof checkoutSession.payment_intent === "string" ? checkoutSession.payment_intent : undefined,
-    amount: centsToDecimal(amountInCents),
-    currency: defaultCurrency,
-    metadata: { kind: "proposal_payment" },
-  });
-
-  return res.status(201).json({
-    checkoutUrl: checkoutSession.url,
-    sessionId: checkoutSession.id,
-  });
+    return res.status(201).json({
+      checkoutUrl:    result.initPoint,
+      preapprovalId:  result.preapprovalId,
+      planId:         result.planId,
+    });
+  } catch (err: any) {
+    console.error("[subscriptions/checkout]", err?.message);
+    return res.status(500).json({ message: err?.message ?? "Erro ao criar assinatura." });
+  }
 });
 
 /**
- * ✅ assinatura por plano
- * POST /subscriptions/checkout/:planId  (planId = pro | premium)
- */
-router.post("/subscriptions/checkout/:planId", authenticate, async (req: AuthenticatedRequest, res) => {
-  const idempotencyKey = getRequiredIdempotencyKey(req.header("Idempotency-Key"));
-  if (!idempotencyKey) {
-    return res.status(400).json({ message: "Header Idempotency-Key é obrigatório." });
-  }
-
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: "Não autenticado." });
-
-  const parsedBody = subscriptionCheckoutSchema.safeParse(req.body);
-  if (!parsedBody.success) {
-    return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
-  }
-
-  const planId = String(req.params.planId || "").trim().toLowerCase();
-
-  if (planId === "free") {
-    return res.status(400).json({ message: "Plano free não possui checkout no Stripe." });
-  }
-
-  const result = await createSubscriptionCheckoutSession({
-    userId,
-    planId,
-    idempotencyKey,
-    successUrl: parsedBody.data.successUrl,
-    cancelUrl: parsedBody.data.cancelUrl,
-  });
-
-  if (!result.ok) {
-    return res.status(result.status).json(result.body);
-  }
-
-  return res.status(201).json({ checkoutUrl: result.session.url, sessionId: result.session.id });
-});
-
-/**
- * Compatibilidade:
- * POST /subscriptions/checkout  -> assume "pro"
- */
-router.post("/subscriptions/checkout", authenticate, async (req: AuthenticatedRequest, res) => {
-  const idempotencyKey = getRequiredIdempotencyKey(req.header("Idempotency-Key"));
-  if (!idempotencyKey) {
-    return res.status(400).json({ message: "Header Idempotency-Key é obrigatório." });
-  }
-
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: "Não autenticado." });
-
-  const parsedBody = subscriptionCheckoutSchema.safeParse(req.body);
-  if (!parsedBody.success) {
-    return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
-  }
-
-  const result = await createSubscriptionCheckoutSession({
-    userId,
-    planId: "pro",
-    idempotencyKey,
-    successUrl: parsedBody.data.successUrl,
-    cancelUrl: parsedBody.data.cancelUrl,
-  });
-
-  if (!result.ok) {
-    return res.status(result.status).json(result.body);
-  }
-
-  return res.status(201).json({ checkoutUrl: result.session.url, sessionId: result.session.id });
-});
-
-/**
- * ✅ CONFIRMAÇÃO PÓS-CHECKOUT (resolve "paguei e continua free")
- * POST /subscriptions/confirm
- * body: { sessionId }
+ * POST /api/payments/subscriptions/confirm
+ * body: { preapprovalId? } ou { externalReference? }
+ *
+ * O MP pode retornar o preapproval_id na URL de retorno (?preapproval_id=XXX).
+ * Se não retornar, buscamos pelo externalReference gravado na sessão de pagamento.
  */
 router.post("/subscriptions/confirm", authenticate, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const parsed = confirmSubscriptionSchema.safeParse(req.body);
-  if (!parsed.success) {
-    return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
-  }
+  const { preapprovalId, externalReference } = req.body ?? {};
 
-  const { sessionId } = parsed.data;
-
-  // 1) Busca session
-  let session: any;
   try {
-    session = await stripe.checkout.sessions.retrieve(sessionId);
-  } catch {
-    return res.status(404).json({ message: "Sessão do Stripe não encontrada." });
-  }
+    let preapproval: any = null;
 
-  // 2) Tem que ser subscription
-  if (session.mode !== "subscription") {
-    return res.status(400).json({ message: "Sessão não é de assinatura." });
-  }
+    // Tenta pelo ID direto primeiro
+    if (preapprovalId && String(preapprovalId).trim().length >= 4) {
+      const cleanId = String(preapprovalId).replace(/[^a-zA-Z0-9_-]/g, "").slice(0, 120);
+      try {
+        preapproval = await mpSubscriptionService.getPreapproval(cleanId);
+      } catch {
+        // ID inválido — tenta pelo externalReference abaixo
+      }
+    }
 
-  // 3) Segurança: session precisa ser do usuário logado
-  const sessionUserId = Number(session?.metadata?.userId ?? 0);
-  if (sessionUserId && sessionUserId !== userId) {
-    return res.status(403).json({ message: "Sessão não pertence ao usuário autenticado." });
-  }
+    // Fallback: busca pelo externalReference
+    if (!preapproval && externalReference) {
+      const cleanRef = String(externalReference).replace(/[^a-zA-Z0-9:_-]/g, "").slice(0, 200);
+      preapproval = await mpSubscriptionService.findPreapprovalByReference(cleanRef);
+    }
 
-  const stripeSubscriptionId =
-    typeof session.subscription === "string"
-      ? session.subscription
-      : typeof session.subscription === "object" && session.subscription
-        ? session.subscription.id
-        : null;
+    // Último recurso: busca pelo externalReference da última sessão do usuário
+    if (!preapproval) {
+      const sub = await storage.getActiveSubscriptionByUser(userId);
+      if (sub) {
+        try {
+          preapproval = await mpSubscriptionService.getPreapproval(sub.stripeSubscriptionId);
+        } catch { /* ignora */ }
+      }
+    }
 
-  const stripeCustomerId = typeof session.customer === "string" ? session.customer : null;
+    if (!preapproval) {
+      return res.status(404).json({ message: "Assinatura não encontrada. Aguarde alguns instantes e tente novamente." });
+    }
 
-  if (!stripeSubscriptionId || !stripeCustomerId) {
-    return res.status(409).json({
-      message: "Assinatura ainda não está disponível. Tente novamente em instantes.",
+    // Extrai planId do externalReference
+    const info = mpSubscriptionService.parsePlanFromExternalReference(preapproval.external_reference ?? "");
+    if (info && info.userId !== userId) {
+      return res.status(403).json({ message: "Assinatura não pertence a este usuário." });
+    }
+
+    const planId = info?.planId ?? "pro";
+    const isActive = mpSubscriptionService.isActiveStatus(preapproval.status);
+
+    await storage.upsertUserSubscription({
+      userId,
+      stripeSubscriptionId: preapproval.id,
+      stripeCustomerId:     String(preapproval.payer_id ?? userId),
+      stripePriceId:        planId,
+      status:               preapproval.status,
+      currentPeriodEnd:     preapproval.next_payment_date ? new Date(preapproval.next_payment_date) : null,
+      cancelAtPeriodEnd:    false,
     });
+
+    return res.json({
+      ok:     true,
+      planId: isActive ? planId : "free",
+      status: preapproval.status,
+    });
+  } catch (err: any) {
+    console.error("[subscriptions/confirm]", err?.message);
+    return res.status(500).json({ message: err?.message ?? "Erro ao confirmar assinatura." });
   }
-
-  // 4) Busca subscription e salva no DB
-  const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
-  const priceId = subscription.items.data[0]?.price?.id;
-
-  if (!priceId) {
-    return res.status(500).json({ message: "Não foi possível identificar o priceId da assinatura." });
-  }
-
-  await storage.upsertUserSubscription({
-    userId,
-    stripeSubscriptionId,
-    stripeCustomerId,
-    stripePriceId: priceId,
-    status: subscription.status,
-    currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-    cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-  });
-
-  // opcional: marca payment session como paid (não quebra se falhar)
-  try {
-    await storage.markPaymentSessionStatus(sessionId, "paid");
-  } catch {
-    // ignore
-  }
-
-  const planId: PlanId = isActiveSubscriptionStatus(subscription.status) ? planFromPriceId(priceId) : "free";
-
-  return res.json({ ok: true, planId });
 });
 
 /**
- * ✅ retorna plano do usuário
+ * POST /api/payments/subscriptions/cancel
+ * Cancela a assinatura ativa do usuário.
+ */
+router.post("/subscriptions/cancel", authenticate, async (req: AuthenticatedRequest, res) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
+  try {
+    const sub = await storage.getActiveSubscriptionByUser(userId);
+    if (!sub) return res.status(404).json({ message: "Nenhuma assinatura ativa encontrada." });
+
+    await mpSubscriptionService.cancelSubscription(sub.stripeSubscriptionId); // coluna reutilizada p/ preapprovalId
+
+    await storage.upsertUserSubscription({
+      userId,
+      stripeSubscriptionId: sub.stripeSubscriptionId,
+      stripeCustomerId:     sub.stripeCustomerId,
+      stripePriceId:        sub.stripePriceId,
+      status:               "cancelled",
+      currentPeriodEnd:     sub.currentPeriodEnd ?? null,
+      cancelAtPeriodEnd:    true,
+    });
+
+    return res.json({ ok: true });
+  } catch (err: any) {
+    console.error("[subscriptions/cancel]", err?.message);
+    return res.status(500).json({ message: err?.message ?? "Erro ao cancelar assinatura." });
+  }
+});
+
+/**
+ * GET /api/payments/me
+ * Retorna o plano atual do usuário.
  */
 router.get("/me", authenticate, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const [payments, initialSubscription] = await Promise.all([
+  const [payments, subscription] = await Promise.all([
     storage.getRecentPaymentsByUser(userId),
     storage.getActiveSubscriptionByUser(userId),
   ]);
 
-  const subscription = initialSubscription ?? (await refreshSubscriptionFromStripeIfNeeded(userId));
-
-  const priceId = subscription?.stripePriceId ?? null;
-  const status = subscription?.status ?? null;
-
-  const planId: PlanId = isActiveSubscriptionStatus(status) ? planFromPriceId(priceId) : "free";
+  // stripePriceId agora guarda "pro" | "premium" | priceId antigo
+  const planId: MpPlanId | "free" = subscription && mpSubscriptionService.isActiveStatus(subscription.status)
+    ? (subscription.stripePriceId === "premium" ? "premium" : "pro")
+    : "free";
 
   return res.json({
     payments,
     subscription,
     plan: {
       planId,
-      status,
-      priceId,
+      status:       subscription?.status ?? null,
       isSubscribed: planId !== "free",
     },
   });
 });
 
+// ─── WEBHOOK DO MERCADO PAGO ──────────────────────────────────────────────────
+
 router.post("/webhook", async (req, res) => {
-  const mercadoPagoSignature = req.header("x-signature");
-  const mercadoPagoRequestId = req.header("x-request-id");
-  const mercadoPagoDataId =
-    typeof req.query["data.id"] === "string"
-      ? req.query["data.id"]
-      : typeof req.query.id === "string"
-        ? req.query.id
-        : undefined;
+  const xSignature  = req.header("x-signature");
+  const xRequestId  = req.header("x-request-id");
+  const dataId =
+    typeof req.query["data.id"] === "string" ? req.query["data.id"] :
+    typeof req.query.id         === "string" ? req.query.id : undefined;
 
-  if (mercadoPagoSignature || mercadoPagoRequestId) {
-    const isValidSignature = verifyMercadoPagoWebhookSignature({
-      xSignature: mercadoPagoSignature,
-      xRequestId: mercadoPagoRequestId,
-      dataId: mercadoPagoDataId,
-    });
+  // ── Valida assinatura ──────────────────────────────────────────────────────
+  const isValid = mpSubscriptionService.validateWebhookSignature({
+    xSignature,
+    xRequestId,
+    dataId,
+  });
 
-    if (!isValidSignature) {
-      return res.status(401).json({ message: "Webhook Mercado Pago inválido." });
+  if (!isValid) return res.status(401).json({ message: "Webhook inválido." });
+
+  const topic = req.query.topic ?? req.query.type;
+
+  try {
+    // ── Webhook de ASSINATURA (preapproval) ───────────────────────────────────
+    if (topic === "preapproval" && dataId) {
+      const preapproval = await mpSubscriptionService.getPreapproval(dataId);
+      const info = mpSubscriptionService.parsePlanFromExternalReference(preapproval.external_reference ?? "");
+
+      if (info) {
+        await storage.upsertUserSubscription({
+          userId:               info.userId,
+          stripeSubscriptionId: preapproval.id,
+          stripeCustomerId:     String(preapproval.payer_id ?? info.userId),
+          stripePriceId:        info.planId,
+          status:               preapproval.status,
+          currentPeriodEnd:     preapproval.next_payment_date
+            ? new Date(preapproval.next_payment_date)
+            : null,
+          cancelAtPeriodEnd: preapproval.status === "cancelled",
+        });
+      }
+
+      return res.status(200).json({ received: true, topic: "preapproval" });
     }
 
-    if (!mercadoPagoDataId) {
-      return res.status(400).json({ message: "Webhook Mercado Pago sem data.id." });
-    }
-
-    try {
-      const payment = await fetchMercadoPagoPayment(mercadoPagoDataId);
+    // ── Webhook de PAGAMENTO (proposta one-time) ──────────────────────────────
+    if ((topic === "payment" || topic === "merchant_order") && dataId) {
+      const payment = await fetchMercadoPagoPayment(dataId);
       const externalReference = payment.external_reference ?? "";
       const match = externalReference.match(/^proposal:(\d+):owner:(\d+):token:([a-f0-9]{1,64})$/i);
 
-      if (!match) {
-        return res.status(200).json({ received: true, ignored: true });
-      }
+      if (!match) return res.status(200).json({ received: true, ignored: true });
 
-      const proposalId = Number(match[1]);
-      const ownerId = Number(match[2]);
+      const proposalId  = Number(match[1]);
+      const ownerId     = Number(match[2]);
       const tokenPrefix = match[3];
 
       const proposal = await storage.getProposalById(ownerId, proposalId);
-      if (!proposal || !proposal.contractSignedAt || !proposal.shareTokenHash?.startsWith(tokenPrefix)) {
+      if (!proposal || !proposal.shareTokenHash?.startsWith(tokenPrefix)) {
         return res.status(400).json({ message: "Referência de pagamento inválida." });
-      }
-
-      const paymentStatus =
-        payment.status === "approved"
-          ? "paid"
-          : payment.status === "rejected" || payment.status === "cancelled"
-            ? "failed"
-            : "pending";
-
-      const relatedSession = await storage.findLatestPendingPaymentSessionForProposal(proposalId, ownerId);
-
-      if (relatedSession) {
-        await storage.markMercadoPagoPayment(relatedSession.id, String(payment.id), paymentStatus);
       }
 
       if (payment.status === "approved") {
         await storage.updateProposalStatus(ownerId, proposalId, "vendida");
       }
 
-      return res.status(200).json({ received: true, provider: "mercado_pago" });
-    } catch {
-      return res.status(500).json({ message: "Falha ao processar webhook Mercado Pago." });
-    }
-  }
-
-  if (!stripeWebhookSecret) {
-    return res.status(500).json({ message: "Webhook da Stripe não configurado." });
-  }
-
-  const signature = req.header("stripe-signature");
-  if (!signature) return res.status(400).json({ message: "Assinatura Stripe ausente." });
-
-  let event;
-  try {
-    event = stripe.webhooks.constructEvent(req.body as Buffer, signature, stripeWebhookSecret);
-  } catch {
-    return res.status(400).json({ message: "Webhook inválido." });
-  }
-
-  try {
-    if (event.type === "checkout.session.completed") {
-      const session = event.data.object as any;
-      const kind = session.metadata?.kind;
-
-      await storage.markPaymentSessionStatus(session.id, "paid");
-
-      if (kind === "proposal_payment") {
-        const userId = Number(session.metadata?.userId ?? 0);
-        const proposalId = Number(session.metadata?.proposalId ?? 0);
-
-        if (userId > 0 && proposalId > 0) {
-          await storage.updateProposalStatus(userId, proposalId, "vendida");
-        }
+      const relatedSession = await storage.findLatestPendingPaymentSessionForProposal(proposalId, ownerId);
+      if (relatedSession) {
+        const paymentStatus =
+          payment.status === "approved"  ? "paid"    :
+          payment.status === "rejected"  ? "failed"  :
+          payment.status === "cancelled" ? "failed"  : "pending";
+        await storage.markMercadoPagoPayment(relatedSession.id, String(payment.id), paymentStatus);
       }
 
-      if (kind === "platform_subscription") {
-        const userId = Number(session.metadata?.userId ?? 0);
-
-        const stripeSubscriptionId =
-          typeof session.subscription === "string"
-            ? session.subscription
-            : typeof session.subscription === "object" && session.subscription
-              ? session.subscription.id
-              : null;
-
-        if (userId > 0 && stripeSubscriptionId && typeof session.customer === "string") {
-          const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId);
-          const priceId = subscription.items.data[0]?.price?.id;
-
-          if (priceId) {
-            await storage.upsertUserSubscription({
-              userId,
-              stripeSubscriptionId,
-              stripeCustomerId: session.customer,
-              stripePriceId: priceId,
-              status: subscription.status,
-              currentPeriodEnd: new Date(subscription.current_period_end * 1000),
-              cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-            });
-          }
-        }
-      }
+      return res.status(200).json({ received: true, topic: "payment" });
     }
 
-    if (event.type === "checkout.session.expired") {
-      const session = event.data.object as any;
-      await storage.markPaymentSessionStatus(session.id, "expired");
-    }
-
-    if (event.type === "payment_intent.payment_failed") {
-      const paymentIntent = event.data.object as any;
-      const paymentSession = await storage.findPaymentSessionByPaymentIntentId(paymentIntent.id);
-
-      if (paymentSession) {
-        await storage.markPaymentSessionStatus(paymentSession.stripeSessionId, "failed");
-      }
-    }
-
-    if (
-      event.type === "customer.subscription.updated" ||
-      event.type === "customer.subscription.deleted" ||
-      event.type === "customer.subscription.created"
-    ) {
-      const subscription = event.data.object as any;
-
-      const userId = Number(subscription.metadata?.userId ?? 0);
-      const priceId = subscription.items.data[0]?.price?.id;
-
-      if (userId > 0 && priceId) {
-        await storage.upsertUserSubscription({
-          userId,
-          stripeSubscriptionId: subscription.id,
-          stripeCustomerId: String(subscription.customer),
-          stripePriceId: priceId,
-          status: subscription.status,
-          currentPeriodEnd: subscription.current_period_end
-            ? new Date(subscription.current_period_end * 1000)
-            : null,
-          cancelAtPeriodEnd: Boolean(subscription.cancel_at_period_end),
-        });
-      }
-    }
-
-    return res.status(200).json({ received: true, requestId: crypto.randomUUID() });
-  } catch {
-    return res.status(500).json({ message: "Falha ao processar webhook Stripe." });
+    return res.status(200).json({ received: true, ignored: true });
+  } catch (err: any) {
+    console.error("[webhook]", err?.message);
+    return res.status(500).json({ message: "Falha ao processar webhook." });
   }
 });
 

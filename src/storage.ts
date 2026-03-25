@@ -17,11 +17,14 @@ export type PaymentSessionStatus = "pending" | "paid" | "failed" | "expired";
 export type ProposalLifecycleStatus = "DRAFT" | "SENT" | "ACCEPTED" | "PAID" | "CANCELLED";
 export type ProposalPaymentStatus = "PENDING" | "CONFIRMED" | "FAILED";
 
-
+// ── Adicionados campos OAuth (opcionais — não quebra chamadas existentes) ─────
 export interface CreateUserInput {
   name: string;
   email: string;
-  passwordHash: string;
+  passwordHash: string | null;   // null para contas OAuth-only sem senha local
+  googleId?: string | null;
+  avatarUrl?: string | null;
+  emailVerified?: boolean;
 }
 
 export interface CreateProposalInput {
@@ -53,19 +56,65 @@ export interface SalesMetrics {
   totalRevenue: number;
 }
 
+export interface MarkProposalContractSignedInput {
+  signerName: string;
+  signerDocument: string;
+  signatureHash: string;
+  signedIp: string;
+  signedUserAgent: string;
+  signatureCiphertext: Buffer;
+  signatureIv: Buffer;
+  signatureAuthTag: Buffer;
+  signatureKeyVersion: string;
+  signatureMimeType: string;
+}
+
 export class Storage {
   async createUser(input: CreateUserInput) {
     const [user] = await db
       .insert(users)
-      .values(input)
+      .values({
+        name:         input.name,
+        email:        input.email,
+        passwordHash: input.passwordHash ?? "",
+        ...( input.googleId     !== undefined && { googleId:      input.googleId }     as any ),
+        ...( input.avatarUrl    !== undefined && { avatarUrl:     input.avatarUrl }    as any ),
+        ...( input.emailVerified !== undefined && { emailVerified: input.emailVerified } as any ),
+      })
       .returning({
-        id: users.id,
-        name: users.name,
-        email: users.email,
+        id:        users.id,
+        name:      users.name,
+        email:     users.email,
         createdAt: users.createdAt,
       });
 
     return user;
+  }
+
+  async updateUserGoogleId(
+    userId: number,
+    data: { googleId: string; avatarUrl: string | null }
+  ) {
+    const result = await db.execute(
+      sql`
+        UPDATE users
+        SET
+          google_id  = ${data.googleId},
+          avatar_url = ${data.avatarUrl}
+        WHERE id = ${userId}
+        RETURNING id, name, email, created_at
+      `
+    ) as any;
+
+    const rows = result?.rows ?? result;
+    const row = Array.isArray(rows) ? rows[0] : rows;
+
+    return {
+      id:        row.id,
+      name:      row.name,
+      email:     row.email,
+      createdAt: row.created_at,
+    };
   }
 
   async findUserByEmail(email: string) {
@@ -73,21 +122,17 @@ export class Storage {
     return user;
   }
 
-  /**
-   * ✅ FIX: incluir pixKey e pixKeyType no SELECT
-   * Motivo: endpoints que usam getUserById/findUserById (ex: /pix-key) precisam desses campos.
-   */
   async findUserById(id: number) {
     const [user] = await db
       .select({
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        stripeCustomerId: users.stripeCustomerId,
+        id:                     users.id,
+        name:                   users.name,
+        email:                  users.email,
+        stripeCustomerId:       users.stripeCustomerId,
         stripeConnectAccountId: users.stripeConnectAccountId,
-        pixKey: users.pixKey,
-        pixKeyType: users.pixKeyType,
-        createdAt: users.createdAt,
+        pixKey:                 users.pixKey,
+        pixKeyType:             users.pixKeyType,
+        createdAt:              users.createdAt,
       })
       .from(users)
       .where(eq(users.id, id));
@@ -123,10 +168,12 @@ export class Storage {
         .orderBy(desc(proposals.createdAt));
     }
 
-    return db.select().from(proposals).where(eq(proposals.userId, userId)).orderBy(desc(proposals.createdAt));
+    return db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.userId, userId))
+      .orderBy(desc(proposals.createdAt));
   }
-
-  
 
   async getProposalById(userId: number, proposalId: number) {
     const [proposal] = await db
@@ -138,11 +185,20 @@ export class Storage {
   }
 
   async getProposalByShareTokenHash(shareTokenHash: string) {
-    const [proposal] = await db.select().from(proposals).where(eq(proposals.shareTokenHash, shareTokenHash));
+    const [proposal] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.shareTokenHash, shareTokenHash));
+
     return proposal;
   }
 
-  async setProposalShareToken(userId: number, proposalId: number, shareTokenHash: string, expiresAt: Date) {
+  async setProposalShareToken(
+    userId: number,
+    proposalId: number,
+    shareTokenHash: string,
+    expiresAt: Date
+  ) {
     const [proposal] = await db
       .update(proposals)
       .set({
@@ -156,17 +212,36 @@ export class Storage {
     return proposal;
   }
 
-  async markProposalContractSignedByToken(shareTokenHash: string, signerName: string, signatureHash: string) {
+  async markProposalContractSignedByToken(
+    shareTokenHash: string,
+    data: MarkProposalContractSignedInput
+  ) {
+    const now = new Date();
+
     const [proposal] = await db
       .update(proposals)
       .set({
-        contractSignedAt: new Date(),
-        contractSignerName: signerName,
-        contractSignatureHash: signatureHash,
-        paymentReleasedAt: new Date(),
-        updatedAt: new Date(),
+        contractSignedAt:            now,
+        contractSignerName:          data.signerName,
+        contractSignerDocument:      data.signerDocument,
+        contractSignatureHash:       data.signatureHash,
+        contractSignerIp:            data.signedIp,
+        contractSignerUserAgent:     data.signedUserAgent,
+        contractSignatureCiphertext: data.signatureCiphertext.toString("base64"),
+        contractSignatureIv:         data.signatureIv.toString("base64"),
+        contractSignatureAuthTag:    data.signatureAuthTag.toString("base64"),
+        contractSignatureKeyVersion: data.signatureKeyVersion,
+        contractSignatureMimeType:   data.signatureMimeType,
+        paymentReleasedAt:           now,
+        lifecycleStatus:             "ACCEPTED",
+        updatedAt:                   now,
       })
-      .where(eq(proposals.shareTokenHash, shareTokenHash))
+      .where(
+        and(
+          eq(proposals.shareTokenHash, shareTokenHash),
+          sql`${proposals.contractSignedAt} is null`
+        )
+      )
       .returning();
 
     return proposal;
@@ -184,17 +259,17 @@ export class Storage {
     };
 
     if (status === "vendida") {
-      payload.acceptedAt = new Date();
+      payload.acceptedAt  = new Date();
       payload.cancelledAt = null;
     }
 
     if (status === "cancelada") {
       payload.cancelledAt = new Date();
-      payload.acceptedAt = null;
+      payload.acceptedAt  = null;
     }
 
     if (status === "pendente") {
-      payload.acceptedAt = null;
+      payload.acceptedAt  = null;
       payload.cancelledAt = null;
     }
 
@@ -216,7 +291,11 @@ export class Storage {
         .orderBy(templates.name);
     }
 
-    return db.select().from(templates).where(eq(templates.isActive, true)).orderBy(templates.name);
+    return db
+      .select()
+      .from(templates)
+      .where(eq(templates.isActive, true))
+      .orderBy(templates.name);
   }
 
   async getTemplateById(templateId: number) {
@@ -232,19 +311,19 @@ export class Storage {
     const [session] = await db
       .insert(paymentSessions)
       .values({
-        userId: input.userId,
-        proposalId: input.proposalId,
-        mode: input.mode,
-        stripeSessionId: input.stripeSessionId,
-        stripePaymentIntentId: input.stripePaymentIntentId,
-        stripeSubscriptionId: input.stripeSubscriptionId,
+        userId:                  input.userId,
+        proposalId:              input.proposalId,
+        mode:                    input.mode,
+        stripeSessionId:         input.stripeSessionId,
+        stripePaymentIntentId:   input.stripePaymentIntentId,
+        stripeSubscriptionId:    input.stripeSubscriptionId,
         mercadoPagoPreferenceId: input.mercadoPagoPreferenceId,
-        mercadoPagoPaymentId: input.mercadoPagoPaymentId,
-        amount: input.amount,
-        currency: input.currency,
-        status: "pending",
-        metadata: input.metadata ?? {},
-        updatedAt: new Date(),
+        mercadoPagoPaymentId:    input.mercadoPagoPaymentId,
+        amount:                  input.amount,
+        currency:                input.currency,
+        status:                  "pending",
+        metadata:                input.metadata ?? {},
+        updatedAt:               new Date(),
       })
       .returning();
 
@@ -252,7 +331,11 @@ export class Storage {
   }
 
   async findPaymentSessionByStripeSessionId(stripeSessionId: string) {
-    const [session] = await db.select().from(paymentSessions).where(eq(paymentSessions.stripeSessionId, stripeSessionId));
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(eq(paymentSessions.stripeSessionId, stripeSessionId));
+
     return session;
   }
 
@@ -283,7 +366,11 @@ export class Storage {
     return session;
   }
 
-  async markMercadoPagoPayment(sessionId: number, mercadoPagoPaymentId: string, status: PaymentSessionStatus) {
+  async markMercadoPagoPayment(
+    sessionId: number,
+    mercadoPagoPaymentId: string,
+    status: PaymentSessionStatus
+  ) {
     const [session] = await db
       .update(paymentSessions)
       .set({ mercadoPagoPaymentId, status, updatedAt: new Date() })
@@ -323,13 +410,13 @@ export class Storage {
   async getRecentPaymentsByUser(userId: number) {
     return db
       .select({
-        id: paymentSessions.id,
+        id:         paymentSessions.id,
         proposalId: paymentSessions.proposalId,
-        mode: paymentSessions.mode,
-        status: paymentSessions.status,
-        amount: paymentSessions.amount,
-        currency: paymentSessions.currency,
-        createdAt: paymentSessions.createdAt,
+        mode:       paymentSessions.mode,
+        status:     paymentSessions.status,
+        amount:     paymentSessions.amount,
+        currency:   paymentSessions.currency,
+        createdAt:  paymentSessions.createdAt,
       })
       .from(paymentSessions)
       .where(eq(paymentSessions.userId, userId))
@@ -351,11 +438,11 @@ export class Storage {
       const [updated] = await db
         .update(userSubscriptions)
         .set({
-          stripePriceId: input.stripePriceId,
-          status: input.status,
-          currentPeriodEnd: input.currentPeriodEnd,
-          cancelAtPeriodEnd: input.cancelAtPeriodEnd,
-          updatedAt: new Date(),
+          stripePriceId:      input.stripePriceId,
+          status:             input.status,
+          currentPeriodEnd:   input.currentPeriodEnd,
+          cancelAtPeriodEnd:  input.cancelAtPeriodEnd,
+          updatedAt:          new Date(),
         })
         .where(eq(userSubscriptions.stripeSubscriptionId, input.stripeSubscriptionId))
         .returning();
@@ -366,14 +453,14 @@ export class Storage {
     const [created] = await db
       .insert(userSubscriptions)
       .values({
-        userId: input.userId,
+        userId:              input.userId,
         stripeSubscriptionId: input.stripeSubscriptionId,
-        stripeCustomerId: input.stripeCustomerId,
-        stripePriceId: input.stripePriceId,
-        status: input.status,
-        currentPeriodEnd: input.currentPeriodEnd,
-        cancelAtPeriodEnd: input.cancelAtPeriodEnd,
-        updatedAt: new Date(),
+        stripeCustomerId:    input.stripeCustomerId,
+        stripePriceId:       input.stripePriceId,
+        status:              input.status,
+        currentPeriodEnd:    input.currentPeriodEnd,
+        cancelAtPeriodEnd:   input.cancelAtPeriodEnd,
+        updatedAt:           new Date(),
       })
       .returning();
 
@@ -389,26 +476,44 @@ export class Storage {
     return subscription;
   }
 
+  // ── FIX: aceita tanto 'active' (Stripe) quanto 'authorized' (Mercado Pago) ──
   async getActiveSubscriptionByUser(userId: number) {
     const [subscription] = await db
       .select()
       .from(userSubscriptions)
-      .where(and(eq(userSubscriptions.userId, userId), eq(userSubscriptions.status, "active")))
+      .where(
+        and(
+          eq(userSubscriptions.userId, userId),
+          sql`${userSubscriptions.status} IN ('active', 'authorized')`
+        )
+      )
       .orderBy(desc(userSubscriptions.updatedAt));
 
     return subscription;
   }
 
   async getProposalByIdUnscoped(proposalId: number) {
-    const [proposal] = await db.select().from(proposals).where(eq(proposals.id, proposalId));
+    const [proposal] = await db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.id, proposalId));
+
     return proposal;
   }
 
   async listProposalsByLifecycle(userId: number) {
-    return db.select().from(proposals).where(eq(proposals.userId, userId)).orderBy(desc(proposals.updatedAt));
+    return db
+      .select()
+      .from(proposals)
+      .where(eq(proposals.userId, userId))
+      .orderBy(desc(proposals.updatedAt));
   }
 
-  async updateProposalLifecycleStatus(userId: number, proposalId: number, lifecycleStatus: ProposalLifecycleStatus) {
+  async updateProposalLifecycleStatus(
+    userId: number,
+    proposalId: number,
+    lifecycleStatus: ProposalLifecycleStatus
+  ) {
     const [proposal] = await db
       .update(proposals)
       .set({ lifecycleStatus, updatedAt: new Date() })
@@ -422,14 +527,24 @@ export class Storage {
     const [proposal] = await db
       .update(proposals)
       .set({ publicHash, updatedAt: new Date() })
-      .where(and(eq(proposals.id, proposalId), eq(proposals.userId, userId), sql`${proposals.publicHash} is null`))
+      .where(
+        and(
+          eq(proposals.id, proposalId),
+          eq(proposals.userId, userId),
+          sql`${proposals.publicHash} is null`
+        )
+      )
       .returning();
 
     return proposal;
   }
 
   async getMercadoPagoAccountByUserId(userId: number) {
-    const [account] = await db.select().from(mercadoPagoAccounts).where(eq(mercadoPagoAccounts.userId, userId));
+    const [account] = await db
+      .select()
+      .from(mercadoPagoAccounts)
+      .where(eq(mercadoPagoAccounts.userId, userId));
+
     return account;
   }
 
@@ -447,12 +562,12 @@ export class Storage {
       const [updated] = await db
         .update(mercadoPagoAccounts)
         .set({
-          mpUserId: input.mpUserId,
-          authMethod: input.authMethod ?? "oauth",
-          accessToken: input.accessToken,
+          mpUserId:     input.mpUserId,
+          authMethod:   input.authMethod ?? "oauth",
+          accessToken:  input.accessToken,
           refreshToken: input.refreshToken,
-          expiresAt: input.expiresAt,
-          updatedAt: new Date(),
+          expiresAt:    input.expiresAt,
+          updatedAt:    new Date(),
         })
         .where(eq(mercadoPagoAccounts.userId, input.userId))
         .returning();
@@ -463,13 +578,13 @@ export class Storage {
     const [created] = await db
       .insert(mercadoPagoAccounts)
       .values({
-        userId: input.userId,
-        mpUserId: input.mpUserId,
-        authMethod: input.authMethod ?? "oauth",
-        accessToken: input.accessToken,
+        userId:       input.userId,
+        mpUserId:     input.mpUserId,
+        authMethod:   input.authMethod ?? "oauth",
+        accessToken:  input.accessToken,
         refreshToken: input.refreshToken,
-        expiresAt: input.expiresAt,
-        updatedAt: new Date(),
+        expiresAt:    input.expiresAt,
+        updatedAt:    new Date(),
       })
       .returning();
 
@@ -477,7 +592,11 @@ export class Storage {
   }
 
   async findPaymentByProposalId(proposalId: number) {
-    const [payment] = await db.select().from(payments).where(eq(payments.proposalId, proposalId));
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.proposalId, proposalId));
+
     return payment;
   }
 
@@ -495,12 +614,12 @@ export class Storage {
       const [updated] = await db
         .update(payments)
         .set({
-          status: input.status,
+          status:               input.status,
           externalPreferenceId: input.externalPreferenceId,
-          externalPaymentId: input.externalPaymentId,
-          paymentUrl: input.paymentUrl,
-          amountCents: input.amountCents,
-          updatedAt: new Date(),
+          externalPaymentId:    input.externalPaymentId,
+          paymentUrl:           input.paymentUrl,
+          amountCents:          input.amountCents,
+          updatedAt:            new Date(),
         })
         .where(eq(payments.proposalId, input.proposalId))
         .returning();
@@ -511,13 +630,13 @@ export class Storage {
     const [created] = await db
       .insert(payments)
       .values({
-        proposalId: input.proposalId,
-        status: input.status,
+        proposalId:           input.proposalId,
+        status:               input.status,
         externalPreferenceId: input.externalPreferenceId,
-        externalPaymentId: input.externalPaymentId,
-        paymentUrl: input.paymentUrl,
-        amountCents: input.amountCents,
-        updatedAt: new Date(),
+        externalPaymentId:    input.externalPaymentId,
+        paymentUrl:           input.paymentUrl,
+        amountCents:          input.amountCents,
+        updatedAt:            new Date(),
       })
       .returning();
 
@@ -525,23 +644,28 @@ export class Storage {
   }
 
   async findPaymentByExternalPaymentId(externalPaymentId: string) {
-    const [payment] = await db.select().from(payments).where(eq(payments.externalPaymentId, externalPaymentId));
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.externalPaymentId, externalPaymentId));
+
     return payment;
   }
 
   async listPendingProposalPayments() {
-    return db.select().from(payments).where(eq(payments.status, "PENDING")).orderBy(desc(payments.updatedAt));
+    return db
+      .select()
+      .from(payments)
+      .where(eq(payments.status, "PENDING"))
+      .orderBy(desc(payments.updatedAt));
   }
 
-  /**
-   * (Agora é redundante, mas pode manter)
-   */
   async getUserByIdForPix(userId: number) {
     const [user] = await db
       .select({
-        id: users.id,
-        pixKey: users.pixKey,
-        pixKeyType: users.pixKeyType,
+        id:          users.id,
+        pixKey:      users.pixKey,
+        pixKeyType:  users.pixKeyType,
       })
       .from(users)
       .where(eq(users.id, userId));
@@ -555,7 +679,7 @@ export class Storage {
       .set({ pixKey, pixKeyType })
       .where(eq(users.id, userId))
       .returning({
-        pixKey: users.pixKey,
+        pixKey:     users.pixKey,
         pixKeyType: users.pixKeyType,
       });
 
@@ -563,7 +687,11 @@ export class Storage {
   }
 
   async findPaymentByExternalPreferenceId(externalPreferenceId: string) {
-    const [payment] = await db.select().from(payments).where(eq(payments.externalPreferenceId, externalPreferenceId));
+    const [payment] = await db
+      .select()
+      .from(payments)
+      .where(eq(payments.externalPreferenceId, externalPreferenceId));
+
     return payment;
   }
 
@@ -571,9 +699,9 @@ export class Storage {
     const [updatedPayment] = await db
       .update(payments)
       .set({
-        status: "CONFIRMED",
+        status:           "CONFIRMED",
         externalPaymentId: input.externalPaymentId,
-        updatedAt: new Date(),
+        updatedAt:        new Date(),
       })
       .where(eq(payments.proposalId, input.proposalId))
       .returning();
@@ -586,24 +714,18 @@ export class Storage {
       .select({
         totalProposals: count(proposals.id),
         totalRevenue: sql<string>`coalesce(sum(case when ${proposals.status} = 'vendida' then ${proposals.value} else 0 end), 0)`,
-        totalSales: sql<number>`coalesce(sum(case when ${proposals.status} = 'vendida' then 1 else 0 end), 0)`,
+        totalSales:   sql<number>`coalesce(sum(case when ${proposals.status} = 'vendida' then 1 else 0 end), 0)`,
       })
       .from(proposals)
       .where(eq(proposals.userId, userId));
 
     const totalProposals = Number(totals.totalProposals ?? 0);
-    const totalSales = Number(totals.totalSales ?? 0);
-    const totalRevenue = Number(totals.totalRevenue ?? 0);
-    const conversionRate = totalProposals === 0 ? 0 : Number(((totalSales / totalProposals) * 100).toFixed(2));
+    const totalSales     = Number(totals.totalSales     ?? 0);
+    const totalRevenue   = Number(totals.totalRevenue   ?? 0);
+    const conversionRate =
+      totalProposals === 0 ? 0 : Number(((totalSales / totalProposals) * 100).toFixed(2));
 
-    
-
-    return {
-      totalProposals,
-      totalSales,
-      conversionRate,
-      totalRevenue,
-    };
+    return { totalProposals, totalSales, conversionRate, totalRevenue };
   }
 }
 

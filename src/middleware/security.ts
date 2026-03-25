@@ -1,27 +1,70 @@
 import { rateLimit } from 'express-rate-limit';
 import type { NextFunction, Request, Response } from 'express';
 
-const MAX_BODY_DEPTH = 8;
-const MAX_ARRAY_LENGTH = 200;
-const FORBIDDEN_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+// ─────────────────────────────────────────────────────────────────────────────
+// CONSTANTS
+// ─────────────────────────────────────────────────────────────────────────────
 
-function sanitizeObject(value: unknown, depth = 0): unknown {
-  if (depth > MAX_BODY_DEPTH) {
-    return undefined;
-  }
+const MAX_BODY_DEPTH   = 8;
+const MAX_ARRAY_LENGTH = 200;
+const FORBIDDEN_KEYS   = new Set(['__proto__', 'constructor', 'prototype']);
+
+// Campos de texto livre que permitem HTML/markdown (NÃO escapar, apenas sanitizar)
+const RICH_TEXT_FIELDS = new Set([
+  'service_scope',
+  'custom_content',
+  'description',
+  'base_content',
+  'content',
+]);
+
+// ─────────────────────────────────────────────────────────────────────────────
+// HTML STRIP
+// ─────────────────────────────────────────────────────────────────────────────
+
+function stripHtmlTags(str: string): string {
+  return str
+    .replace(/<[^>]*>/g, '')
+    .replace(/javascript\s*:/gi, '')
+    .replace(/data\s*:/gi, '')
+    .replace(/on\w+\s*=/gi, '');
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// SANITIZE OBJECT
+// ─────────────────────────────────────────────────────────────────────────────
+
+function sanitizeObject(
+  value: unknown,
+  depth = 0,
+  fieldName?: string
+): unknown {
+  if (depth > MAX_BODY_DEPTH) return undefined;
 
   if (typeof value === 'string') {
-    return value.trim();
+    const trimmed = value.trim();
+    if (fieldName && RICH_TEXT_FIELDS.has(fieldName)) {
+      return trimmed
+        .replace(/javascript\s*:/gi, '')
+        .replace(/data\s*:/gi, '')
+        .replace(/on\w+\s*=/gi, '');
+    }
+    return stripHtmlTags(trimmed);
   }
 
   if (Array.isArray(value)) {
-    return value.slice(0, MAX_ARRAY_LENGTH).map((item) => sanitizeObject(item, depth + 1));
+    return value
+      .slice(0, MAX_ARRAY_LENGTH)
+      .map((item) => sanitizeObject(item, depth + 1, fieldName));
   }
 
   if (value && typeof value === 'object') {
     const sanitizedEntries = Object.entries(value as Record<string, unknown>)
       .filter(([key]) => !FORBIDDEN_KEYS.has(key))
-      .map(([key, nestedValue]) => [key, sanitizeObject(nestedValue, depth + 1)]);
+      .map(([key, nestedValue]) => [
+        key,
+        sanitizeObject(nestedValue, depth + 1, key),
+      ]);
 
     return Object.fromEntries(sanitizedEntries);
   }
@@ -29,12 +72,21 @@ function sanitizeObject(value: unknown, depth = 0): unknown {
   return value;
 }
 
-export function sanitizeRequestBody(req: Request, _res: Response, next: NextFunction) {
-  if (req.originalUrl.startsWith('/api/payments/webhook')) {
-    return next();
-  }
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE — sanitize request body
+// ─────────────────────────────────────────────────────────────────────────────
 
-  if (Buffer.isBuffer(req.body)) {
+export function sanitizeRequestBody(
+  req: Request,
+  _res: Response,
+  next: NextFunction
+) {
+  if (req.originalUrl.startsWith('/api/payments/webhook')) return next();
+  if (Buffer.isBuffer(req.body)) return next();
+
+  // Rotas de assinatura pública enviam signatureDataUrl (data:image/png;base64,...)
+  // O sanitizer removeria o prefixo "data:" quebrando a validação — pula essas rotas
+  if (req.originalUrl.includes('/public/') && req.originalUrl.endsWith('/sign')) {
     return next();
   }
 
@@ -45,6 +97,61 @@ export function sanitizeRequestBody(req: Request, _res: Response, next: NextFunc
   next();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE — iframe XSS protection
+// ─────────────────────────────────────────────────────────────────────────────
+
+export function contractRenderHeaders(
+  _req: Request,
+  res: Response,
+  next: NextFunction
+) {
+  res.setHeader('X-Frame-Options', 'SAMEORIGIN');
+  res.setHeader(
+    'Content-Security-Policy',
+    "default-src 'self'; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data:; script-src 'none';"
+  );
+  next();
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE — upload rate limiter
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const uploadRateLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_UPLOAD_MAX ?? 20),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    return (req as any).user?.id?.toString() ?? req.ip ?? 'unknown';
+  },
+  message: {
+    message: 'Limite de uploads atingido. Tente novamente em 1 hora.',
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// MIDDLEWARE — contract creation rate limiter
+// ─────────────────────────────────────────────────────────────────────────────
+
+export const contractCreationRateLimiter = rateLimit({
+  windowMs: 120 * 60 * 1000,
+  max: Number(process.env.RATE_LIMIT_CONTRACT_MAX),
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req: Request) => {
+    return (req as any).user?.id?.toString() ?? req.ip ?? 'unknown';
+  },
+  message: {
+    message: 'Muitos contratos criados. Tente novamente em 1 hora.',
+  },
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RATE LIMITERS
+// ─────────────────────────────────────────────────────────────────────────────
+
 const WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
 
 export const authRateLimiter = rateLimit({
@@ -53,8 +160,8 @@ export const authRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: {
-    message: 'Muitas tentativas de autenticação. Aguarde e tente novamente.'
-  }
+    message: 'Muitas tentativas de autenticação. Aguarde e tente novamente.',
+  },
 });
 
 export const apiRateLimiter = rateLimit({
@@ -64,8 +171,8 @@ export const apiRateLimiter = rateLimit({
   legacyHeaders: false,
   skip: (req) => req.originalUrl.startsWith('/api/payments/webhook'),
   message: {
-    message: 'Muitas requisições. Tente novamente em instantes.'
-  }
+    message: 'Muitas requisições. Tente novamente em instantes.',
+  },
 });
 
 export const sensitiveRateLimiter = rateLimit({
@@ -74,8 +181,8 @@ export const sensitiveRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: {
-    message: 'Muitas tentativas em rota sensível. Tente novamente em alguns minutos.'
-  }
+    message: 'Muitas tentativas em rota sensível. Tente novamente em alguns minutos.',
+  },
 });
 
 export const webhookRateLimiter = rateLimit({
@@ -84,6 +191,6 @@ export const webhookRateLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   message: {
-    message: 'Muitas notificações recebidas temporariamente.'
-  }
+    message: 'Muitas notificações recebidas temporariamente.',
+  },
 });

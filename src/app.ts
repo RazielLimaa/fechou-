@@ -1,7 +1,9 @@
 import express from 'express';
-import cors from 'cors';
+import cors, { type CorsOptions } from 'cors';
 import helmet from 'helmet';
-import "dotenv/config";
+import cookieParser from 'cookie-parser';
+import 'dotenv/config';
+
 import authRoutes from './routes/auth.routes.js';
 import proposalsRoutes from './routes/proposals.routes.js';
 import templatesRoutes from './routes/templates.routes.js';
@@ -9,61 +11,99 @@ import metricsRoutes from './routes/metrics.routes.js';
 import paymentsRoutes from './routes/payments.routes.js';
 import mercadoPagoRoutes from './routes/mercadopago.routes.js';
 import webhooksRoutes from './routes/webhooks.routes.js';
-import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
-import userRoutes from "./routes/user.routes.js";
+import { apiRateLimiter, sanitizeRequestBody, contractCreationRateLimiter } from './middleware/security.js';
+import userRoutes from './routes/user.routes.js';
 import copilotRoutes from './routes/copilot.routes.js';
 import contractsRoutes from './routes/contracts.routes.js';
 import clausesRoutes from './routes/clauses.routes.js';
+import profileRoutes from './routes/profile.routes.js';
+import scoreRoutes from './routes/score.routes.js';
+import ratingRoutes from './routes/rating.routes.js';
 
 const app = express();
-const corsOrigin = (origin: string | undefined, cb: (err: Error | null, allow?: boolean) => void) => {
-  const allowlist = [
-    "http://http://127.0.0.1:5173", // Vite (dev)
-    "http://localhost:5174", // se às vezes muda
-    process.env.FRONTEND_URL, // produção (ex: https://fechou.app)
-  ].filter(Boolean) as string[];
-
-  // requests sem origin (curl/postman) -> permitir
-  if (!origin) return cb(null, true);
-
-  if (allowlist.includes(origin)) return cb(null, true);
-
-  return cb(new Error(`CORS blocked for origin: ${origin}`));
-};
-
 
 app.disable('x-powered-by');
-app.set('trust proxy', 1);
-app.use(helmet({
-  crossOriginEmbedderPolicy: false,
-  contentSecurityPolicy: false
-}));
 
-app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
-const allowedOrigins = (process.env.CORS_ORIGIN ?? "")
-.split(",")
-.map((s) => s.trim())
-.filter(Boolean);
+if (process.env.NODE_ENV === 'production') {
+  app.set('trust proxy', 1);
+}
+
+const allowedOrigins = (
+  process.env.ALLOWED_ORIGINS ||
+  process.env.CORS_ORIGIN ||
+  'http://localhost:5173,http://localhost:3000'
+)
+  .split(',')
+  .map((s) => s.trim())
+  .filter(Boolean);
+
+const isProduction = process.env.NODE_ENV === 'production';
 
 app.use(
-  cors({
-    origin(origin, cb) {
-      if (!origin) return cb(null, true); // curl/postman
-      if (allowedOrigins.includes(origin)) return cb(null, true);
-      return cb(new Error(`CORS blocked for origin: ${origin}`));
-    },
-    credentials: true,
+  helmet({
+    crossOriginEmbedderPolicy: false,
+    crossOriginOpenerPolicy: false,
+    contentSecurityPolicy: false,
   })
 );
 
-app.options("*", cors({ origin: allowedOrigins, credentials: true }));
+const corsOptions: CorsOptions = {
+  origin(origin, cb) {
+    if (!origin) {
+      return isProduction
+        ? cb(new Error('CORS: origin ausente bloqueado em produção.'))
+        : cb(null, true);
+    }
 
-app.use(express.json({ limit: '20kb' }));
+    if (allowedOrigins.includes(origin)) {
+      return cb(null, true);
+    }
+
+    return cb(new Error(`CORS: origin não permitida: ${origin}`));
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+  allowedHeaders: [
+    'Content-Type',
+    'Authorization',
+    'X-Requested-With',
+    'x-requested-with',
+    'X-CSRF-Token',
+    'x-csrf-token',
+    'idempotency-key',
+    'Accept',
+    'Origin',
+    'Cache-Control',
+    'Pragma',
+    'Expires',
+  ],
+  exposedHeaders: [
+    'set-cookie',
+  ],
+  optionsSuccessStatus: 204,
+  maxAge: 86400,
+};
+
+app.use(cors(corsOptions));
+app.options(/.*/, cors(corsOptions));
+
+app.use(cookieParser());
+
+app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+
+app.use('/api/proposals/public', express.json({ limit: '4mb' }));
+app.use('/api/contracts/public', express.json({ limit: '4mb' }));
+app.use(express.json({ limit: '25mb' }));
+
 app.use(sanitizeRequestBody);
 app.use('/api', apiRateLimiter);
 
 app.get('/health', (_req, res) => {
   res.json({ ok: true, service: 'fechou-backend' });
+});
+
+app.get('/api/health', (_req, res) => {
+  res.json({ status: 'ok', timestamp: new Date().toISOString() });
 });
 
 app.use('/api/auth', authRoutes);
@@ -73,18 +113,38 @@ app.use('/api/metrics', metricsRoutes);
 app.use('/api/payments', paymentsRoutes);
 app.use('/api/mercadopago', mercadoPagoRoutes);
 app.use('/api/webhooks', webhooksRoutes);
-app.use("/api/user", userRoutes);
+app.use('/api/user', userRoutes);
 app.use('/api/copilot', copilotRoutes);
-app.use('/api/contracts', contractsRoutes);
+app.use('/api/contracts', contractCreationRateLimiter, contractsRoutes);
 app.use('/api/clauses', clausesRoutes);
+app.use('/api/profile', profileRoutes);
+app.use('/api/score', scoreRoutes);
+app.use('/api/ratings', ratingRoutes);
 
-app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+app.use((err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  if (err?.message?.startsWith('CORS:')) {
+    return res.status(403).json({
+      message: err.message,
+      allowedOrigins,
+    });
+  }
+
   if (err instanceof SyntaxError && 'body' in err) {
     return res.status(400).json({ message: 'JSON inválido no corpo da requisição.' });
   }
 
-  console.error(err);
-  return res.status(500).json({ message: 'Erro interno no servidor.' });
+  if (err?.status === 429) {
+    return res.status(429).json({ message: err.message ?? 'Muitas requisições.' });
+  }
+
+  console.error('[ERROR]', err);
+
+  return res.status(err?.status ?? 500).json({
+    message:
+      process.env.NODE_ENV === 'production'
+        ? 'Erro interno no servidor.'
+        : (err?.message ?? 'Erro interno no servidor.'),
+  });
 });
 
 export default app;
