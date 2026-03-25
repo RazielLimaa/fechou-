@@ -10,6 +10,7 @@ import {
 } from "../services/mercadoPago.js";
 import { mpSubscriptionService, type MpPlanId } from "../services/Mercadopago subscriptions.service.js";
 import { requirePlan } from "../middleware/requirePlan.js";
+import { markReplayToken } from "../services/securityStore.js";
 
 const router = Router();
 
@@ -21,7 +22,8 @@ const subscriptionCheckoutSchema = z.object({
 });
 
 const confirmSubscriptionSchema = z.object({
-  preapprovalId: z.string().trim().min(4),
+  preapprovalId: z.string().trim().min(4).max(120).optional(),
+  externalReference: z.string().trim().min(4).max(200).optional(),
 });
 
 const publicMercadoPagoCheckoutSchema = z.object({
@@ -170,7 +172,12 @@ router.post("/subscriptions/confirm", authenticate, async (req: AuthenticatedReq
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
-  const { preapprovalId, externalReference } = req.body ?? {};
+  const parsedBody = confirmSubscriptionSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
+  }
+
+  const { preapprovalId, externalReference } = parsedBody.data;
 
   try {
     let preapproval: any = null;
@@ -298,6 +305,18 @@ router.get("/me", authenticate, async (req: AuthenticatedRequest, res) => {
 // ─── WEBHOOK DO MERCADO PAGO ──────────────────────────────────────────────────
 
 router.post("/webhook", async (req, res) => {
+  const requestId = String(req.header("x-request-id") ?? "");
+  if (requestId) {
+    const replay = await markReplayToken({
+      scope: "mp-payments-webhook-request",
+      token: requestId,
+      ttlMs: 10 * 60 * 1000,
+    });
+    if (replay.replay) {
+      return res.status(200).json({ received: true, replay: true });
+    }
+  }
+
   const xSignature  = req.header("x-signature");
   const xRequestId  = req.header("x-request-id");
   const dataId =

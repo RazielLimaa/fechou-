@@ -140,6 +140,19 @@ export class Storage {
     return user;
   }
 
+  async findUserAuthById(id: number) {
+    const [user] = await db
+      .select({
+        id: users.id,
+        email: users.email,
+        name: users.name,
+        passwordHash: users.passwordHash,
+      })
+      .from(users)
+      .where(eq(users.id, id));
+    return user;
+  }
+
   async getUserById(id: number) {
     return this.findUserById(id);
   }

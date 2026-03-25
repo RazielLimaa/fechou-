@@ -2,26 +2,18 @@ import { Router } from 'express';
 import { storage } from '../storage.js';
 import { fetchPaymentById, getValidFreelancerAccessToken, verifyMercadoPagoWebhookSignature } from '../services/mercadoPago.js';
 import { webhookRateLimiter } from '../middleware/security.js';
+import { distributedRateLimit } from '../middleware/distributed-security.js';
+import { markReplayToken } from '../services/securityStore.js';
+import { logSecurityEvent } from '../services/securityEvents.js';
 
 const router = Router();
-const processedWebhookRequestIds = new Map<string, number>();
 
 router.use(webhookRateLimiter);
-
-function rememberWebhookRequestId(requestId: string) {
-  const ttlMs = 10 * 60 * 1000;
-  processedWebhookRequestIds.set(requestId, Date.now() + ttlMs);
-}
-
-function isReplayWebhookRequestId(requestId: string) {
-  const expiration = processedWebhookRequestIds.get(requestId);
-  if (!expiration) return false;
-  if (expiration < Date.now()) {
-    processedWebhookRequestIds.delete(requestId);
-    return false;
-  }
-  return true;
-}
+router.use(distributedRateLimit({
+  scope: 'webhook-mercadopago',
+  limit: Number(process.env.RATE_LIMIT_WEBHOOK_MAX ?? 120),
+  windowMs: Number(process.env.RATE_LIMIT_WEBHOOK_WINDOW_MS ?? 60_000),
+}));
 
 router.post('/mercadopago', async (req, res) => {
   const topic = String(req.query.topic ?? req.body?.type ?? '').toLowerCase();
@@ -39,12 +31,22 @@ router.post('/mercadopago', async (req, res) => {
     return res.status(401).json({ message: 'Assinatura do webhook Mercado Pago inválida.' });
   }
 
-  if (requestId && isReplayWebhookRequestId(requestId)) {
-    return res.status(200).json({ received: true, replay: true, requestId });
-  }
-
   if (requestId) {
-    rememberWebhookRequestId(requestId);
+    const replay = await markReplayToken({
+      scope: 'mp-webhook-request',
+      token: requestId,
+      ttlMs: 10 * 60 * 1000,
+    });
+    if (replay.replay) {
+      logSecurityEvent({
+        eventName: 'webhook_replay_blocked',
+        severity: 'high',
+        requestId: (req as any).requestId ?? requestId,
+        ip: req.ip,
+        route: req.originalUrl,
+      });
+      return res.status(200).json({ received: true, requestId, replay: true });
+    }
   }
 
   if (!dataId || !(topic.includes('payment') || topic === '')) {
