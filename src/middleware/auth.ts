@@ -176,16 +176,7 @@ export function signAccessToken(user: { id: number; email: string }) {
 
 export function resolveAuthenticatedUserId(req: Request) {
   const maybeReq = req as AuthenticatedRequest;
-
-  if (maybeReq.user?.id) return maybeReq.user.id;
-
-  const fromHeader = Number(req.header('x-user-id'));
-  if (Number.isInteger(fromHeader) && fromHeader > 0) return fromHeader;
-
-  const fallback = Number(process.env.MVP_USER_ID ?? 1);
-  if (Number.isInteger(fallback) && fallback > 0) return fallback;
-
-  return null;
+  return maybeReq.user?.id ?? null;
 }
 
 export function authenticateOrMvp(
@@ -193,38 +184,5 @@ export function authenticateOrMvp(
   res: Response,
   next: NextFunction
 ) {
-  const authHeader = req.headers.authorization;
-
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.replace('Bearer ', '').trim();
-
-    try {
-      const payload = jwt.verify(token, jwtSecret, {
-        algorithms: [jwtAlgorithm],
-        issuer: jwtIssuer,
-        audience: jwtAudience
-      });
-
-      if (isValidPayload(payload)) {
-        req.user = {
-          id: Number(payload.sub),
-          email: payload.email
-        };
-        return next();
-      }
-    } catch {}
-  }
-
-  const fallback = resolveAuthenticatedUserId(req);
-
-  if (!fallback) {
-    return res.status(401).json({ message: 'Não autenticado.' });
-  }
-
-  req.user = {
-    id: fallback,
-    email: 'mvp@local.dev'
-  };
-
-  return next();
+  return authenticate(req, res, next);
 }
