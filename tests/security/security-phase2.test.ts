@@ -2,8 +2,11 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { csrfProtection } from '../../src/middleware/distributed-security.js';
 import { verifyMercadoPagoWebhookSignature } from '../../src/services/mercadoPago.js';
+<<<<<<< codex/conduct-thorough-security-audit-of-backend-ipxqeb
 import { requireStepUp } from '../../src/middleware/step-up.js';
 import { buildStepUpPayloadHash } from '../../src/services/stepUp.js';
+=======
+>>>>>>> main
 
 function createRes() {
   const res: any = {
@@ -75,6 +78,7 @@ test('webhook signature falha sem secret', async () => {
 
   assert.equal(valid, false);
 });
+<<<<<<< codex/conduct-thorough-security-audit-of-backend-ipxqeb
 
 test('step-up payload hash é estável para payload idêntico', async () => {
   const a = buildStepUpPayloadHash({ proposalId: 10, amount: 1000 });
@@ -99,3 +103,5 @@ test('requireStepUp retorna 403 quando token não é enviado', async () => {
   assert.equal(nextCalled, false);
   assert.equal(res.statusCode, 403);
 });
+=======
+>>>>>>> main
