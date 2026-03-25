@@ -11,18 +11,31 @@ import { OAuth2Client } from 'google-auth-library';
 const googleClientId     = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
 const googleRedirectUri  = process.env.GOOGLE_REDIRECT_URI;
+const googleRedirectUriList = String(process.env.GOOGLE_REDIRECT_URI_LIST ?? '')
+  .split(',')
+  .map((v) => v.trim())
+  .filter(Boolean);
 
 if (!googleClientId || !googleClientSecret || !googleRedirectUri) {
   throw new Error(
     'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URI são obrigatórios.'
   );
 }
+const requiredGoogleClientId = googleClientId;
+const requiredGoogleClientSecret = googleClientSecret;
+const primaryGoogleRedirectUri = googleRedirectUri;
 
-const googleOAuthClient = new OAuth2Client(
-  googleClientId,
-  googleClientSecret,
-  googleRedirectUri
-);
+function buildGoogleOAuthClient(redirectUri: string) {
+  return new OAuth2Client(
+    requiredGoogleClientId,
+    requiredGoogleClientSecret,
+    redirectUri
+  );
+}
+
+function allowedRedirectUris() {
+  return Array.from(new Set([primaryGoogleRedirectUri, 'postmessage', ...googleRedirectUriList]));
+}
 
 export interface GoogleUserPayload {
   googleId:      string;
@@ -37,16 +50,48 @@ export interface GoogleUserPayload {
  * O Client Secret nunca sai do servidor.
  * Lança erro descritivo se o code for inválido ou o email não estiver verificado.
  */
-export async function verifyGoogleCode(code: string): Promise<GoogleUserPayload> {
+export async function verifyGoogleCode(code: string, requestedRedirectUri?: string): Promise<GoogleUserPayload> {
   // 1. Troca o code por tokens
   let idToken: string;
+  const redirects = allowedRedirectUris();
+
+  const preferredRedirect = String(requestedRedirectUri ?? '').trim();
+  const isProd = process.env.NODE_ENV === 'production';
+  const canUseRequestedRedirect =
+    preferredRedirect.length > 0 &&
+    (redirects.includes(preferredRedirect) || (!isProd && /^https?:\/\/|^postmessage$/.test(preferredRedirect)));
+
+  const orderedRedirects = canUseRequestedRedirect
+    ? [preferredRedirect, ...redirects.filter((item) => item !== preferredRedirect)]
+    : redirects;
+
+  let tokenError: unknown = null;
   try {
-    const { tokens } = await googleOAuthClient.getToken(code);
-    if (!tokens.id_token) throw new Error('id_token ausente na resposta do Google.');
-    idToken = tokens.id_token;
+    let foundToken: string | null = null;
+    for (const redirectUri of orderedRedirects) {
+      try {
+        const client = buildGoogleOAuthClient(redirectUri);
+        const { tokens } = await client.getToken(code);
+        if (!tokens.id_token) {
+          throw new Error('id_token ausente na resposta do Google.');
+        }
+        foundToken = tokens.id_token;
+        break;
+      } catch (err) {
+        tokenError = err;
+      }
+    }
+
+    if (!foundToken) {
+      throw tokenError ?? new Error('Falha ao obter tokens do Google.');
+    }
+    idToken = foundToken;
   } catch (err) {
-    // Não vaze detalhes do Google para o cliente
     const msg = err instanceof Error ? err.message : String(err);
+    if (msg.toLowerCase().includes('redirect_uri_mismatch')) {
+      console.error('[verifyGoogleCode] getToken falhou: redirect_uri_mismatch. URIs permitidas:', orderedRedirects.join(', '));
+      throw new Error('Falha no login Google: redirect_uri_mismatch. Verifique GOOGLE_REDIRECT_URI / GOOGLE_REDIRECT_URI_LIST (ou use postmessage no fluxo popup) e Authorized redirect URIs no Google Cloud.');
+    }
     console.error('[verifyGoogleCode] getToken falhou:', msg);
     throw new Error('Falha ao verificar autenticação com o Google.');
   }
@@ -54,9 +99,10 @@ export async function verifyGoogleCode(code: string): Promise<GoogleUserPayload>
   // 2. Verifica assinatura e audience do ID token
   let payload: { sub: string; email: string; email_verified?: boolean; name?: string; picture?: string };
   try {
-    const ticket = await googleOAuthClient.verifyIdToken({
+    const client = buildGoogleOAuthClient(orderedRedirects[0]);
+    const ticket = await client.verifyIdToken({
       idToken,
-      audience: googleClientId,
+      audience: requiredGoogleClientId,
     });
     payload = ticket.getPayload() as typeof payload;
   } catch (err) {
@@ -127,12 +173,15 @@ export function authenticate(
   next: NextFunction
 ) {
   const authHeader = req.headers.authorization;
+  const cookieToken = (req as any).cookies?.access_token;
 
-  if (!authHeader?.startsWith('Bearer ')) {
+  if (!authHeader?.startsWith('Bearer ') && !cookieToken) {
     return res.status(401).json({ message: 'Token ausente.' });
   }
 
-  const token = authHeader.replace('Bearer ', '').trim();
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.replace('Bearer ', '').trim()
+    : String(cookieToken).trim();
 
   let payload: unknown;
 
@@ -176,16 +225,7 @@ export function signAccessToken(user: { id: number; email: string }) {
 
 export function resolveAuthenticatedUserId(req: Request) {
   const maybeReq = req as AuthenticatedRequest;
-
-  if (maybeReq.user?.id) return maybeReq.user.id;
-
-  const fromHeader = Number(req.header('x-user-id'));
-  if (Number.isInteger(fromHeader) && fromHeader > 0) return fromHeader;
-
-  const fallback = Number(process.env.MVP_USER_ID ?? 1);
-  if (Number.isInteger(fallback) && fallback > 0) return fallback;
-
-  return null;
+  return maybeReq.user?.id ?? null;
 }
 
 export function authenticateOrMvp(
@@ -193,38 +233,5 @@ export function authenticateOrMvp(
   res: Response,
   next: NextFunction
 ) {
-  const authHeader = req.headers.authorization;
-
-  if (authHeader?.startsWith('Bearer ')) {
-    const token = authHeader.replace('Bearer ', '').trim();
-
-    try {
-      const payload = jwt.verify(token, jwtSecret, {
-        algorithms: [jwtAlgorithm],
-        issuer: jwtIssuer,
-        audience: jwtAudience
-      });
-
-      if (isValidPayload(payload)) {
-        req.user = {
-          id: Number(payload.sub),
-          email: payload.email
-        };
-        return next();
-      }
-    } catch {}
-  }
-
-  const fallback = resolveAuthenticatedUserId(req);
-
-  if (!fallback) {
-    return res.status(401).json({ message: 'Não autenticado.' });
-  }
-
-  req.user = {
-    id: fallback,
-    email: 'mvp@local.dev'
-  };
-
-  return next();
+  return authenticate(req, res, next);
 }

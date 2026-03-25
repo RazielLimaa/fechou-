@@ -19,6 +19,8 @@ export const refreshTokens = pgTable(
     tokenHash: varchar("token_hash", { length: 128 }).notNull().unique(),
     family:    uuid("family").notNull(),
     expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    absoluteExpiresAt: timestamp("absolute_expires_at", { withTimezone: true }),
+    lastUsedAt: timestamp("last_used_at", { withTimezone: true }),
     revoked:   boolean("revoked").notNull().default(false),
     userAgent: text("user_agent"),
     ipAddress: varchar("ip_address", { length: 80 }),

@@ -249,6 +249,30 @@ export const usersPlan = pgTable("users_plan", {
   planType: userPlanTypeEnum("plan_type").notNull().default("free"),
 });
 
+export const securityRateLimits = pgTable("security_rate_limits", {
+  key: varchar("key", { length: 255 }).primaryKey(),
+  count: integer("count").notNull().default(0),
+  windowStart: timestamp("window_start").notNull().defaultNow(),
+  updatedAt: timestamp("updated_at").notNull().defaultNow(),
+});
+
+export const securityReplayTokens = pgTable("security_replay_tokens", {
+  tokenHash: varchar("token_hash", { length: 128 }).primaryKey(),
+  scope: varchar("scope", { length: 80 }).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
+export const securityStepUpTokens = pgTable("security_stepup_tokens", {
+  tokenHash: varchar("token_hash", { length: 128 }).primaryKey(),
+  userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  scope: varchar("scope", { length: 120 }).notNull(),
+  payloadHash: varchar("payload_hash", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at").notNull(),
+  usedAt: timestamp("used_at"),
+  createdAt: timestamp("created_at").notNull().defaultNow(),
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // SCORE SYSTEM
 // ─────────────────────────────────────────────────────────────────────────────

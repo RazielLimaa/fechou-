@@ -26,6 +26,7 @@ import {
 } from "../lib/signatureCrypto.js";
 import { db } from "../db/index.js";
 import { contracts, users } from "../db/schema.js";
+import { requireStepUp } from "../middleware/step-up.js";
 
 const router = Router();
 
@@ -122,16 +123,8 @@ router.post("/render", async (req: AuthenticatedRequest, res: Response) => {
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
   const schema = z.object({ contractId: z.coerce.number().int().positive() });
-  // DEBUG — remover após resolver
-  console.log("[provider-sig] req.body type:", typeof req.body);
-  console.log("[provider-sig] req.body keys:", req.body ? Object.keys(req.body) : "null/undefined");
-  console.log("[provider-sig] signatureDataUrl type:", typeof req.body?.signatureDataUrl);
-  console.log("[provider-sig] signatureDataUrl length:", req.body?.signatureDataUrl?.length ?? "N/A");
-  console.log("[provider-sig] signatureDataUrl prefix:", String(req.body?.signatureDataUrl ?? "").slice(0, 60));
-
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
-    console.error("[provider-sig] Zod errors:", JSON.stringify(parsed.error.flatten(), null, 2));
     return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
   }
 
@@ -158,16 +151,8 @@ router.post("/provider-signature", async (req: AuthenticatedRequest, res: Respon
     // Não usar .trim() — pode truncar o prefixo "data:image/png;base64,"
     signatureDataUrl: z.string().min(30).max(2_500_000),
   });
-  // DEBUG — remover após resolver
-  console.log("[provider-sig] req.body type:", typeof req.body);
-  console.log("[provider-sig] req.body keys:", req.body ? Object.keys(req.body) : "null/undefined");
-  console.log("[provider-sig] signatureDataUrl type:", typeof req.body?.signatureDataUrl);
-  console.log("[provider-sig] signatureDataUrl length:", req.body?.signatureDataUrl?.length ?? "N/A");
-  console.log("[provider-sig] signatureDataUrl prefix:", String(req.body?.signatureDataUrl ?? "").slice(0, 60));
-
   const parsed = schema.safeParse(req.body);
   if (!parsed.success) {
-    console.error("[provider-sig] Zod errors:", JSON.stringify(parsed.error.flatten(), null, 2));
     return res.status(400).json({ message: "Dados inválidos.", errors: parsed.error.flatten() });
   }
 
@@ -192,9 +177,6 @@ router.post("/provider-signature", async (req: AuthenticatedRequest, res: Respon
   try {
     signatureBuffer = extractPngBufferFromDataUrl(rawDataUrl);
   } catch (err: any) {
-    // Log para debug em dev
-    console.error("[provider-sig] extractPng falhou:", err?.message);
-    console.error("[provider-sig] dataUrl prefix (50 chars):", rawDataUrl.slice(0, 50));
     return res.status(400).json({ message: err?.message ?? "Assinatura inválida." });
   }
 
@@ -340,6 +322,9 @@ router.get("/:id", async (req: AuthenticatedRequest, res: Response) => {
 */
 
 router.post("/:id/clauses", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
   const parsedContractId = contractIdSchema.safeParse(req.params.id);
   if (!parsedContractId.success) return res.status(400).json({ message: "ID inválido." });
 
@@ -347,7 +332,8 @@ router.post("/:id/clauses", async (req: AuthenticatedRequest, res: Response) => 
   if (!parsedBody.success)
     return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
 
-  const result = await clauseService.addClauseToContract(
+  const result = await clauseService.addClauseToContractOwned(
+    userId,
     parsedContractId.data,
     String(parsedBody.data.clause_id)
   );
@@ -365,6 +351,9 @@ router.post("/:id/clauses", async (req: AuthenticatedRequest, res: Response) => 
 */
 
 router.patch("/:id/clauses/reorder", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
   const parsedId = contractIdSchema.safeParse(req.params.id);
   if (!parsedId.success) return res.status(400).json({ message: "ID inválido." });
 
@@ -372,7 +361,8 @@ router.patch("/:id/clauses/reorder", async (req: AuthenticatedRequest, res: Resp
   if (!parsedBody.success)
     return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
 
-  const reordered = await clauseService.reorderClauses(
+  const reordered = await clauseService.reorderClausesOwned(
+    userId,
     parsedId.data,
     parsedBody.data.startIndex,
     parsedBody.data.endIndex
@@ -390,6 +380,9 @@ router.patch("/:id/clauses/reorder", async (req: AuthenticatedRequest, res: Resp
 */
 
 router.patch("/:id/clauses/:clauseId", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
   const parsedContractId = contractIdSchema.safeParse(req.params.id);
   const parsedClauseId   = clauseIdSchema.safeParse(req.params.clauseId);
   if (!parsedContractId.success || !parsedClauseId.success)
@@ -399,7 +392,8 @@ router.patch("/:id/clauses/:clauseId", async (req: AuthenticatedRequest, res: Re
   if (!parsedBody.success)
     return res.status(400).json({ message: "Dados inválidos.", errors: parsedBody.error.flatten() });
 
-  const updated = await clauseService.updateClauseContent(
+  const updated = await clauseService.updateClauseContentOwned(
+    userId,
     parsedContractId.data,
     parsedClauseId.data.toString(),
     parsedBody.data.custom_content
@@ -417,12 +411,16 @@ router.patch("/:id/clauses/:clauseId", async (req: AuthenticatedRequest, res: Re
 */
 
 router.delete("/:id/clauses/:clauseId", async (req: AuthenticatedRequest, res: Response) => {
+  const userId = req.user?.id;
+  if (!userId) return res.status(401).json({ message: "Não autenticado." });
+
   const parsedContractId = contractIdSchema.safeParse(req.params.id);
   const parsedClauseId   = clauseIdSchema.safeParse(req.params.clauseId);
   if (!parsedContractId.success || !parsedClauseId.success)
     return res.status(400).json({ message: "IDs inválidos." });
 
-  const removed = await clauseService.removeClauseFromContract(
+  const removed = await clauseService.removeClauseFromContractOwned(
+    userId,
     parsedContractId.data,
     parsedClauseId.data.toString()
   );
@@ -799,7 +797,7 @@ router.post("/:id/share-link", async (req: AuthenticatedRequest, res: Response) 
 |--------------------------------------------------------------------------
 */
 
-router.post("/:id/mark-paid", async (req: AuthenticatedRequest, res: Response) => {
+router.post("/:id/mark-paid", requireStepUp("contracts.mark-paid", (req) => ({ contractId: req.params.id, ...(req.body ?? {}) })), async (req: AuthenticatedRequest, res: Response) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
