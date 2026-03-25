@@ -7,22 +7,12 @@ import { authenticate, signAccessToken, type AuthenticatedRequest, verifyGoogleC
 import { storage } from '../storage.js';
 import { db } from '../db/index.js';
 import { createRefreshToken, rotateRefreshToken, revokeRefreshToken } from '../services/token.js';
-import { buildStepUpPayloadHash, issueStepUpToken } from '../services/stepUp.js';
 
 const router = Router();
 const authDistributedLimiter = distributedRateLimit({
   scope: 'auth',
   limit: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 15),
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
-});
-const authIdentityLimiter = distributedRateLimit({
-  scope: 'auth-identity',
-  limit: 10,
-  windowMs: 15 * 60 * 1000,
-  key: (req) => {
-    const email = String(req.body?.email ?? '').trim().toLowerCase();
-    return `${req.ip}:${email || 'unknown'}`;
-  },
 });
 
 const ACCESS_COOKIE = 'access_token';
@@ -79,21 +69,9 @@ const googleSchema = z.object({
   code: z.string().trim().min(10).max(4096),
 });
 
-const stepUpSchema = z.object({
-  scope: z.enum([
-    'user.pix.update',
-    'user.pix.delete',
-    'payments.mark-paid',
-    'contracts.mark-paid',
-    'integrations.mp.api-key.register',
-  ]),
-  payload: z.record(z.unknown()).default({}),
-  password: z.string().min(1).max(128).optional(),
-});
-
 // ── POST /register ────────────────────────────────────────────────────────────
 
-router.post('/register', authRateLimiter, authDistributedLimiter, authIdentityLimiter, async (req, res) => {
+router.post('/register', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -132,7 +110,7 @@ router.post('/register', authRateLimiter, authDistributedLimiter, authIdentityLi
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 
-router.post('/login', authRateLimiter, authDistributedLimiter, authIdentityLimiter, async (req, res) => {
+router.post('/login', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -286,33 +264,6 @@ router.post('/logout', async (req, res) => {
 router.get('/csrf', authenticate, async (req, res) => {
   const csrfToken = issueCsrfToken(req, res);
   return res.status(200).json({ csrfToken });
-});
-
-router.post('/step-up/request', authenticate, authDistributedLimiter, async (req: AuthenticatedRequest, res) => {
-  const userId = req.user?.id;
-  if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
-
-  const parsed = stepUpSchema.safeParse(req.body ?? {});
-  if (!parsed.success) return res.status(400).json({ message: 'Dados inválidos.' });
-
-  const userAuth = await storage.findUserAuthById(userId);
-  if (!userAuth) return res.status(404).json({ message: 'Usuário não encontrado.' });
-
-  if (userAuth.passwordHash) {
-    const provided = String(parsed.data.password ?? '');
-    const ok = await bcrypt.compare(provided, userAuth.passwordHash);
-    if (!ok) return res.status(403).json({ message: 'Step-up auth required.' });
-  }
-
-  const payloadHash = buildStepUpPayloadHash(parsed.data.payload);
-  const token = await issueStepUpToken({
-    userId,
-    scope: parsed.data.scope,
-    payloadHash,
-    ttlMs: 5 * 60 * 1000,
-  });
-
-  return res.status(201).json(token);
 });
 
 // ── GET /me ───────────────────────────────────────────────────────────────────

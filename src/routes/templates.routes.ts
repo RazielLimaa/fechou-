@@ -10,15 +10,7 @@ router.use(authenticate);
 router.use(requirePlan("pro"));
 
 router.get("/advanced", async (req, res) => {
-  const templates = await storage.listTemplates();
-  return res.json({
-    items: templates,
-    total: templates.length,
-    capabilities: {
-      canFilterByCategory: true,
-      requiresPlan: "pro",
-    },
-  });
+  return res.status(501).json({ message: "Endpoint avançado ainda não implementado." });
 });
 
 const querySchema = z.object({
