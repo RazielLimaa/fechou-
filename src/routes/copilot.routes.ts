@@ -8,7 +8,6 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
-import { distributedRateLimit } from '../middleware/distributed-security.js';
 import { storage } from '../storage.js';
 import {
   generateCopilotPlan,
@@ -20,11 +19,6 @@ import {
 
 const router = Router();
 router.use(authenticate);
-router.use(distributedRateLimit({
-  scope: 'copilot',
-  limit: 120,
-  windowMs: 10 * 60 * 1000,
-}));
 
 // ─── Schemas de validação ─────────────────────────────────────────────────────
 

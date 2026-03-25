@@ -2,7 +2,6 @@ import { Router } from "express";
 import { z } from "zod";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
 import { storage } from "../storage.js";
-import { requireStepUp } from "../middleware/step-up.js";
 
 const router = Router();
 
@@ -23,7 +22,7 @@ router.get("/pix-key", authenticateOrMvp, async (req: AuthenticatedRequest, res)
   });
 });
 
-router.post("/pix-key", authenticateOrMvp, requireStepUp("user.pix.update", (req) => req.body ?? {}), async (req: AuthenticatedRequest, res) => {
+router.post("/pix-key", authenticateOrMvp, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
@@ -44,7 +43,7 @@ router.post("/pix-key", authenticateOrMvp, requireStepUp("user.pix.update", (req
   });
 });
 
-router.delete("/pix-key", authenticateOrMvp, requireStepUp("user.pix.delete", () => ({})), async (req: AuthenticatedRequest, res) => {
+router.delete("/pix-key", authenticateOrMvp, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
