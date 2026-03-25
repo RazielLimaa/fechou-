@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "tsx watch src/server.ts",
     "build": "tsc -p tsconfig.json",
+    "test:security": "DATABASE_URL=postgres://local:local@localhost:5432/local tsx --test tests/security/security-phase2.test.ts",
     "start": "node dist/server.js",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "dotenv -e .env -- drizzle-kit migrate",

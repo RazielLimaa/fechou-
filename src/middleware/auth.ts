@@ -127,12 +127,15 @@ export function authenticate(
   next: NextFunction
 ) {
   const authHeader = req.headers.authorization;
+  const cookieToken = (req as any).cookies?.access_token;
 
-  if (!authHeader?.startsWith('Bearer ')) {
+  if (!authHeader?.startsWith('Bearer ') && !cookieToken) {
     return res.status(401).json({ message: 'Token ausente.' });
   }
 
-  const token = authHeader.replace('Bearer ', '').trim();
+  const token = authHeader?.startsWith('Bearer ')
+    ? authHeader.replace('Bearer ', '').trim()
+    : String(cookieToken).trim();
 
   let payload: unknown;
 

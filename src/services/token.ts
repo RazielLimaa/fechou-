@@ -52,16 +52,16 @@ export function signAccessToken(user: TokenUser): string {
     process.env.JWT_SECRET!,
     {
       expiresIn: (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"],
-      issuer:   "fechou-api",
-      audience: "fechou-app",
+      issuer:   process.env.JWT_ISSUER ?? "fechou-api",
+      audience: process.env.JWT_AUDIENCE ?? "fechou-client",
     }
   );
 }
 
 export function verifyAccessToken(token: string): jwt.JwtPayload {
   return jwt.verify(token, process.env.JWT_SECRET!, {
-    issuer:   "fechou-api",
-    audience: "fechou-app",
+    issuer:   process.env.JWT_ISSUER ?? "fechou-api",
+    audience: process.env.JWT_AUDIENCE ?? "fechou-client",
   }) as jwt.JwtPayload;
 }
 
@@ -76,6 +76,9 @@ export async function createRefreshToken(
   const rawToken    = generateSecureToken(48);
   const tokenHash   = hashToken(rawToken);
   const tokenFamily = family ?? uuidv4();
+  const absoluteExpiresAt = new Date(
+    Date.now() + parseDurationMs(process.env.JWT_REFRESH_ABSOLUTE_EXPIRES_IN ?? "30d")
+  );
   const expiresAt   = new Date(
     Date.now() + parseDurationMs(process.env.JWT_REFRESH_EXPIRES_IN ?? "7d")
   );
@@ -85,6 +88,8 @@ export async function createRefreshToken(
     tokenHash,
     family:    tokenFamily,
     expiresAt,
+    absoluteExpiresAt,
+    lastUsedAt: new Date(),
     userAgent: meta.userAgent?.slice(0, 512) ?? null,
     ipAddress: meta.ipAddress?.slice(0, 80)  ?? null,
   });
@@ -128,6 +133,13 @@ export async function rotateRefreshToken(
   if (stored.expiresAt < new Date()) {
     throw new AuthError("Sessão expirada. Faça login novamente.", 401);
   }
+  if (stored.absoluteExpiresAt && stored.absoluteExpiresAt < new Date()) {
+    await db
+      .update(refreshTokens)
+      .set({ revoked: true })
+      .where(eq(refreshTokens.family, stored.family));
+    throw new AuthError("Sessão absoluta expirada. Faça login novamente.", 401);
+  }
 
   // ── Revoga o atual ────────────────────────────────────────────────────────
   await db
@@ -147,6 +159,8 @@ export async function rotateRefreshToken(
     tokenHash: newHash,
     family:    stored.family,
     expiresAt,
+    absoluteExpiresAt: stored.absoluteExpiresAt,
+    lastUsedAt: new Date(),
     userAgent: meta.userAgent?.slice(0, 512) ?? null,
     ipAddress: meta.ipAddress?.slice(0, 80)  ?? null,
   });

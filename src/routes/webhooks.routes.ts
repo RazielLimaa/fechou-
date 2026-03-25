@@ -2,10 +2,17 @@ import { Router } from 'express';
 import { storage } from '../storage.js';
 import { fetchPaymentById, getValidFreelancerAccessToken, verifyMercadoPagoWebhookSignature } from '../services/mercadoPago.js';
 import { webhookRateLimiter } from '../middleware/security.js';
+import { distributedRateLimit } from '../middleware/distributed-security.js';
+import { markReplayToken } from '../services/securityStore.js';
 
 const router = Router();
 
 router.use(webhookRateLimiter);
+router.use(distributedRateLimit({
+  scope: 'webhook-mercadopago',
+  limit: Number(process.env.RATE_LIMIT_WEBHOOK_MAX ?? 120),
+  windowMs: Number(process.env.RATE_LIMIT_WEBHOOK_WINDOW_MS ?? 60_000),
+}));
 
 router.post('/mercadopago', async (req, res) => {
   const topic = String(req.query.topic ?? req.body?.type ?? '').toLowerCase();
@@ -21,6 +28,17 @@ router.post('/mercadopago', async (req, res) => {
 
   if (!validSignature) {
     return res.status(401).json({ message: 'Assinatura do webhook Mercado Pago inválida.' });
+  }
+
+  if (requestId) {
+    const replay = await markReplayToken({
+      scope: 'mp-webhook-request',
+      token: requestId,
+      ttlMs: 10 * 60 * 1000,
+    });
+    if (replay.replay) {
+      return res.status(200).json({ received: true, requestId, replay: true });
+    }
   }
 
   if (!dataId || !(topic.includes('payment') || topic === '')) {

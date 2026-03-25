@@ -20,6 +20,7 @@ import clausesRoutes from './routes/clauses.routes.js';
 import profileRoutes from './routes/profile.routes.js';
 import scoreRoutes from './routes/score.routes.js';
 import ratingRoutes from './routes/rating.routes.js';
+import { csrfProtection } from './middleware/distributed-security.js';
 
 const app = express();
 
@@ -104,6 +105,24 @@ app.use('/api/contracts/public', express.json({ limit: '4mb' }));
 app.use(express.json({ limit: '25mb' }));
 
 app.use(sanitizeRequestBody);
+app.use(
+  csrfProtection({
+    allowedOrigins,
+    exemptPaths: [
+      '/api/health',
+      '/api/auth/login',
+      '/api/auth/register',
+      '/api/auth/google',
+      '/api/auth/refresh',
+      '/api/auth/logout',
+      '/api/webhooks/',
+      '/api/payments/webhook',
+      '/api/proposals/public/',
+      '/api/payments/public/',
+      '/api/mercadopago/callback',
+    ],
+  })
+);
 app.use('/api', apiRateLimiter);
 
 app.get('/health', (_req, res) => {

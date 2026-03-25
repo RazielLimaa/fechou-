@@ -2,10 +2,43 @@ import { Router } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { authRateLimiter } from '../middleware/security.js';
+import { distributedRateLimit, issueCsrfToken } from '../middleware/distributed-security.js';
 import { authenticate, signAccessToken, type AuthenticatedRequest, verifyGoogleCode } from '../middleware/auth.js';
 import { storage } from '../storage.js';
+import { db } from '../db/index.js';
+import { createRefreshToken, rotateRefreshToken, revokeRefreshToken } from '../services/token.js';
 
 const router = Router();
+const authDistributedLimiter = distributedRateLimit({
+  scope: 'auth',
+  limit: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 15),
+  windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
+});
+
+const ACCESS_COOKIE = 'access_token';
+const REFRESH_COOKIE = 'refresh_token';
+
+function accessCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    path: '/',
+    maxAge: 15 * 60 * 1000,
+  };
+}
+
+function refreshCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    path: '/api/auth',
+    maxAge: 7 * 24 * 60 * 60 * 1000,
+  };
+}
 
 // ── Tipo mínimo de usuário ────────────────────────────────────────────────────
 type MinimalUser = { id: number; name: string; email: string; createdAt: Date };
@@ -38,7 +71,7 @@ const googleSchema = z.object({
 
 // ── POST /register ────────────────────────────────────────────────────────────
 
-router.post('/register', authRateLimiter, async (req, res) => {
+router.post('/register', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -60,13 +93,24 @@ router.post('/register', authRateLimiter, async (req, res) => {
   });
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
-  return res.status(201).json({ user, token });
+  return res.status(201).json({ user, token, csrfToken });
 });
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 
-router.post('/login', authRateLimiter, async (req, res) => {
+router.post('/login', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -93,16 +137,28 @@ router.post('/login', authRateLimiter, async (req, res) => {
   }
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
   return res.json({
     token,
+    csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
 });
 
 // ── POST /google ──────────────────────────────────────────────────────────────
 // Authorization Code flow no backend (sem aceitar access_token do frontend).
-router.post('/google', authRateLimiter, async (req, res) => {
+router.post('/google', authRateLimiter, authDistributedLimiter, async (req, res) => {
   const parsed = googleSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -144,11 +200,70 @@ router.post('/google', authRateLimiter, async (req, res) => {
   }
 
   const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
 
   return res.status(200).json({
     token,
+    csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
+});
+
+router.post('/refresh', authDistributedLimiter, async (req, res) => {
+  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? req.body?.refreshToken ?? '').trim();
+  if (!currentRefresh) {
+    return res.status(401).json({ message: 'Sessão expirada.' });
+  }
+
+  try {
+    const rotated = await rotateRefreshToken(db as any, currentRefresh, {
+      userAgent: String(req.headers['user-agent'] ?? ''),
+      ipAddress: req.ip,
+    });
+
+    const user = await storage.findUserById(rotated.userId);
+    if (!user) return res.status(401).json({ message: 'Sessão inválida.' });
+
+    const accessToken = signAccessToken({ id: user.id, email: user.email });
+    res.cookie(ACCESS_COOKIE, accessToken, accessCookieOptions());
+    res.cookie(REFRESH_COOKIE, rotated.newRawToken, refreshCookieOptions());
+    const csrfToken = issueCsrfToken(req, res);
+
+    return res.status(200).json({
+      token: accessToken,
+      csrfToken,
+      user,
+    });
+  } catch {
+    return res.status(401).json({ message: 'Sessão inválida ou revogada.' });
+  }
+});
+
+router.post('/logout', async (req, res) => {
+  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
+  if (currentRefresh) {
+    await revokeRefreshToken(db as any, currentRefresh);
+  }
+
+  res.clearCookie(ACCESS_COOKIE, { path: '/' });
+  res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+  res.clearCookie('csrf_token', { path: '/' });
+  return res.status(200).json({ ok: true });
+});
+
+router.get('/csrf', authenticate, async (req, res) => {
+  const csrfToken = issueCsrfToken(req, res);
+  return res.status(200).json({ csrfToken });
 });
 
 // ── GET /me ───────────────────────────────────────────────────────────────────

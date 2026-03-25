@@ -4,6 +4,7 @@ import { z } from "zod";
 import { rateLimit } from "express-rate-limit";
 import { and, eq, sql } from "drizzle-orm";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
+import { distributedRateLimit } from "../middleware/distributed-security.js";
 import { storage, type ProposalStatus } from "../storage.js";
 import { db } from "../db/index.js";
 import { contracts } from "../db/schema.js";
@@ -91,6 +92,25 @@ const proposalCancelLimiter = rateLimit({
   message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
 });
 
+const distributedPublicGetLimiter = distributedRateLimit({
+  scope: 'public-proposal-get',
+  limit: 60,
+  windowMs: 10 * 60 * 1000,
+});
+
+const distributedPublicSignLimiter = distributedRateLimit({
+  scope: 'public-proposal-sign',
+  limit: 5,
+  windowMs: 10 * 60 * 1000,
+});
+
+const distributedCancelLimiter = distributedRateLimit({
+  scope: 'proposal-cancel',
+  limit: 10,
+  windowMs: 10 * 60 * 1000,
+  key: (req) => `${req.ip}:${req.params.id ?? ''}`,
+});
+
 /**
  * =============================
  * Schemas
@@ -141,6 +161,7 @@ const markPaidSchema = z.object({
 router.get(
   "/public/:token",
   publicProposalGetLimiter,
+  distributedPublicGetLimiter,
   async (req: Request, res: Response) => {
     setPublicNoCache(res);
 
@@ -207,6 +228,7 @@ router.get(
 router.post(
   "/public/:token/sign",
   publicProposalSignLimiter,
+  distributedPublicSignLimiter,
   async (req: Request, res: Response) => {
     setPublicNoCache(res);
 
@@ -422,6 +444,7 @@ router.get("/:id", async (req: AuthenticatedRequest, res: Response) => {
 router.patch(
   "/:id/cancel",
   proposalCancelLimiter,
+  distributedCancelLimiter,
   async (req: AuthenticatedRequest, res: Response) => {
     const userId = req.user?.id;
     if (!userId) return res.status(401).json({ message: "Não autenticado." });
