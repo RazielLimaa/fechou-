@@ -10,7 +10,15 @@ router.use(authenticate);
 router.use(requirePlan("pro"));
 
 router.get("/advanced", async (req, res) => {
-  // ...
+  const templates = await storage.listTemplates();
+  return res.json({
+    items: templates,
+    total: templates.length,
+    capabilities: {
+      canFilterByCategory: true,
+      requiresPlan: "pro",
+    },
+  });
 });
 
 const querySchema = z.object({
