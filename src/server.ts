@@ -1,4 +1,6 @@
 import 'dotenv/config';
+import app from './app.js';
+import { closeDatabasePool, testDatabaseConnection } from './db/index.js';
 
 const REQUIRED_ENV = [
   'DATABASE_URL',
@@ -35,18 +37,38 @@ if (process.env.JWT_SECRET!.length < 32) {
   process.exit(1);
 }
 
-import app from './app.js';
-
 const port = Number(process.env.PORT ?? 3001);
+let server: ReturnType<typeof app.listen> | null = null;
 
-const server = app.listen(port, '0.0.0.0', () => {
-  console.log(`🚀 Fechou! backend rodando em http://localhost:${port}`);
-});
+async function bootstrap() {
+  const dbHealthy = await testDatabaseConnection();
+  if (!dbHealthy) {
+    console.warn('[boot] Postgres indisponível no startup. API iniciará em modo degradado (fail-open em rate limit distribuído).');
+  }
 
-function shutdown(signal: string) {
-  console.log(`${signal} recebido. Encerrando...`);
-  server.close(() => process.exit(0));
+  server = app.listen(port, '0.0.0.0', () => {
+    console.log(`🚀 Fechou! backend rodando em http://localhost:${port}`);
+  });
 }
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+async function shutdown(signal: string) {
+  console.log(`${signal} recebido. Encerrando...`);
+
+  if (server) {
+    await new Promise<void>((resolve) => {
+      server!.close(() => resolve());
+    });
+  }
+
+  await closeDatabasePool();
+  process.exit(0);
+}
+
+process.on('SIGTERM', () => {
+  void shutdown('SIGTERM');
+});
+process.on('SIGINT', () => {
+  void shutdown('SIGINT');
+});
+
+void bootstrap();

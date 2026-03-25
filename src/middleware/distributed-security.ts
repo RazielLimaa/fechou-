@@ -18,16 +18,28 @@ export function distributedRateLimit(options: {
     }
     const key = options.key ? options.key(req) : getClientIp(req);
 
-    const result = await checkDistributedRateLimit({
-      scope: options.scope,
-      key,
-      limit: options.limit,
-      windowMs: options.windowMs,
-    });
+    try {
+      const result = await checkDistributedRateLimit({
+        scope: options.scope,
+        key,
+        limit: options.limit,
+        windowMs: options.windowMs,
+      });
 
-    if (!result.allowed) {
-      res.setHeader('Retry-After', String(result.retryAfterSec));
-      return res.status(429).json({ message: 'Muitas requisições. Tente novamente em alguns instantes.' });
+      if (result.degraded) {
+        console.warn(`[distributed-rate-limit] fallback fail-open ativo para scope=${options.scope}`);
+        return next();
+      }
+
+      if (!result.allowed) {
+        res.setHeader('Retry-After', String(result.retryAfterSec));
+        return res.status(429).json({ message: 'Muitas requisições. Tente novamente em alguns instantes.' });
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error(`[distributed-rate-limit] erro inesperado (scope=${options.scope}):`, msg);
+      // fail-open temporário para preservar disponibilidade da API
+      return next();
     }
 
     next();
