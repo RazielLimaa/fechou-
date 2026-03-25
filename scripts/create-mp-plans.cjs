@@ -10,8 +10,6 @@ if (!MP_ACCESS_TOKEN) {
   process.exit(1);
 }
 
-console.log("🔑 Token encontrado:", MP_ACCESS_TOKEN.slice(0, 20) + "...");
-
 async function createPlan(reason, amount) {
   const res = await fetch("https://api.mercadopago.com/preapproval_plan", {
     method: "POST",

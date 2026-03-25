@@ -175,6 +175,16 @@ export class ClauseService {
     return row;
   }
 
+  async addClauseToContractOwned(userId: number, contractId: number, clauseId: string) {
+    const [contract] = await db
+      .select({ id: contracts.id })
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+
+    if (!contract) return null;
+    return this.addClauseToContract(contractId, clauseId);
+  }
+
   /*
   |--------------------------------------------------------------------------
   | REMOVE CLAUSE
@@ -194,6 +204,16 @@ export class ClauseService {
       .returning();
 
     return removed;
+  }
+
+  async removeClauseFromContractOwned(userId: number, contractId: number, clauseId: string) {
+    const [contract] = await db
+      .select({ id: contracts.id })
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+
+    if (!contract) return null;
+    return this.removeClauseFromContract(contractId, clauseId);
   }
 
   /*
@@ -220,6 +240,21 @@ export class ClauseService {
       .returning();
 
     return updated;
+  }
+
+  async updateClauseContentOwned(
+    userId: number,
+    contractId: number,
+    clauseId: string,
+    content: string
+  ) {
+    const [contract] = await db
+      .select({ id: contracts.id })
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+
+    if (!contract) return null;
+    return this.updateClauseContent(contractId, clauseId, content);
   }
 
   /*
@@ -267,6 +302,21 @@ export class ClauseService {
       .from(contractClauses)
       .where(eq(contractClauses.contractId, contractId))
       .orderBy(asc(contractClauses.orderIndex));
+  }
+
+  async reorderClausesOwned(
+    userId: number,
+    contractId: number,
+    startIndex: number,
+    endIndex: number
+  ) {
+    const [contract] = await db
+      .select({ id: contracts.id })
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+
+    if (!contract) return null;
+    return this.reorderClauses(contractId, startIndex, endIndex);
   }
 }
 

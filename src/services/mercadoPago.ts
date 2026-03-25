@@ -38,7 +38,12 @@ function getEncryptionKeyBuffer() {
 
 export function encryptToken(plainText: string) {
   const key = getEncryptionKeyBuffer();
-  if (!key) return plainText;
+  if (!key) {
+    if (process.env.NODE_ENV === 'production') {
+      throw new Error('TOKENS_ENCRYPTION_KEY ausente/inválida em produção.');
+    }
+    return plainText;
+  }
 
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv('aes-256-gcm', key, iv);
@@ -318,7 +323,7 @@ export function verifyMercadoPagoWebhookSignature(input: {
   xRequestId?: string;
   dataId?: string;
 }) {
-  if (!webhookSecret) return true;
+  if (!webhookSecret) return false;
   if (!input.xSignature || !input.xRequestId || !input.dataId) return false;
 
   const chunks = input.xSignature.split(',').reduce<Record<string, string>>((acc, part) => {

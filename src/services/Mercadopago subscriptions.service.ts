@@ -189,7 +189,7 @@ export class MercadoPagoSubscriptionService {
     dataId:      string | undefined;
   }): boolean {
     const secret = process.env.MP_WEBHOOK_SECRET;
-    if (!secret) return true; // sem secret configurado, aceita tudo (só dev)
+    if (!secret) return false;
 
     const { xSignature, xRequestId, dataId } = params;
     if (!xSignature) return false;
@@ -216,8 +216,10 @@ export class MercadoPagoSubscriptionService {
       .createHmac("sha256", secret)
       .update(manifest)
       .digest("hex");
-
-    return expected === v1;
+    const expectedBuf = Buffer.from(expected, "hex");
+    const providedBuf = Buffer.from(v1, "hex");
+    if (expectedBuf.length !== providedBuf.length) return false;
+    return crypto.timingSafeEqual(expectedBuf, providedBuf);
   }
 
   /**
