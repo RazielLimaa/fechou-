@@ -1,6 +1,6 @@
 import 'dotenv/config';
 import app from './app.js';
-import { closeDatabasePool, testDatabaseConnection } from './db/index.js';
+import { closeDatabasePool, testDatabaseConnectionWithRetry } from './db/index.js';
 
 const REQUIRED_ENV = [
   'DATABASE_URL',
@@ -41,8 +41,18 @@ const port = Number(process.env.PORT ?? 3001);
 let server: ReturnType<typeof app.listen> | null = null;
 
 async function bootstrap() {
-  const dbHealthy = await testDatabaseConnection();
+  const dbHealthy = await testDatabaseConnectionWithRetry({
+    maxAttempts: Number(process.env.DB_STARTUP_MAX_ATTEMPTS ?? 6),
+    retryDelayMs: Number(process.env.DB_STARTUP_RETRY_MS ?? 2_000),
+  });
+  const requireDbOnStartup = process.env.DB_REQUIRED_ON_STARTUP === 'true';
+
   if (!dbHealthy) {
+    if (requireDbOnStartup) {
+      console.error('[boot] Postgres indisponível no startup. Encerrando processo (DB_REQUIRED_ON_STARTUP=true).');
+      process.exit(1);
+    }
+
     console.warn('[boot] Postgres indisponível no startup. API iniciará em modo degradado (fail-open em rate limit distribuído).');
   }
 

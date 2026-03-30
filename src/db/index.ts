@@ -57,6 +57,34 @@ export async function testDatabaseConnection() {
   }
 }
 
+function sleep(ms: number) {
+  return new Promise<void>((resolve) => {
+    setTimeout(resolve, ms);
+  });
+}
+
+export async function testDatabaseConnectionWithRetry(input?: {
+  maxAttempts?: number;
+  retryDelayMs?: number;
+}) {
+  const maxAttempts = Math.max(1, Number(input?.maxAttempts ?? 5));
+  const retryDelayMs = Math.max(0, Number(input?.retryDelayMs ?? 2_000));
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    const ok = await testDatabaseConnection();
+    if (ok) return true;
+
+    if (attempt < maxAttempts) {
+      console.warn(
+        `[db] tentativa ${attempt}/${maxAttempts} falhou. Nova tentativa em ${retryDelayMs}ms...`,
+      );
+      await sleep(retryDelayMs);
+    }
+  }
+
+  return false;
+}
+
 export async function closeDatabasePool() {
   try {
     await pool.end();
