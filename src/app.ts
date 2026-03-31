@@ -70,6 +70,8 @@ const corsOptions: CorsOptions = {
     'Authorization',
     'X-Requested-With',
     'x-requested-with',
+    'X-Step-Up-Token',
+    'x-step-up-token',
     'X-CSRF-Token',
     'x-csrf-token',
     'idempotency-key',

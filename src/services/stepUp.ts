@@ -7,8 +7,29 @@ function sha256(input: string) {
   return crypto.createHash('sha256').update(input).digest('hex');
 }
 
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) {
+    return value.map((item) => canonicalize(item));
+  }
+
+  if (value && typeof value === 'object') {
+    return Object.keys(value as Record<string, unknown>)
+      .sort((a, b) => a.localeCompare(b))
+      .reduce<Record<string, unknown>>((acc, key) => {
+        const raw = (value as Record<string, unknown>)[key];
+        if (raw !== undefined) {
+          acc[key] = canonicalize(raw);
+        }
+        return acc;
+      }, {});
+  }
+
+  return value ?? null;
+}
+
 export function buildStepUpPayloadHash(payload: unknown) {
-  return sha256(JSON.stringify(payload ?? {}));
+  const normalized = canonicalize(payload ?? {});
+  return sha256(JSON.stringify(normalized));
 }
 
 export async function issueStepUpToken(input: {
