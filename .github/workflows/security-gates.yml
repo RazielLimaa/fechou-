@@ -52,7 +52,25 @@ jobs:
         with:
           node-version: '22'
       - run: npm ci
-      - run: npm audit --omit=dev --audit-level=high
+      - name: Run npm audit (fail on vulnerabilities, tolerate endpoint outages)
+        run: |
+          set +e
+          npm audit --omit=dev --audit-level=high > audit.log 2>&1
+          status=$?
+          set -e
+
+          cat audit.log
+
+          if [ $status -eq 0 ]; then
+            exit 0
+          fi
+
+          if rg -n "audit endpoint returned an error|403 Forbidden|EAI_AGAIN|ECONNRESET|ETIMEDOUT" audit.log >/dev/null; then
+            echo "npm audit endpoint unavailable; not failing gate due upstream connectivity/registry issue."
+            exit 0
+          fi
+
+          exit $status
 
   secret-scan:
     runs-on: ubuntu-latest
