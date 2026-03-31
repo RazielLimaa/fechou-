@@ -23,7 +23,7 @@ router.get("/pix-key", authenticateOrMvp, async (req: AuthenticatedRequest, res)
   });
 });
 
-router.post("/pix-key", authenticateOrMvp, requireStepUp("user.pix.update", (req) => req.body ?? {}), async (req: AuthenticatedRequest, res) => {
+router.post("/pix-key", authenticateOrMvp, requireStepUp("user.pix.update", () => ({})), async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: "Não autenticado." });
 
