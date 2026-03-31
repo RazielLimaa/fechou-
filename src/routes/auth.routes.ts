@@ -12,13 +12,13 @@ import { buildStepUpPayloadHash, issueStepUpToken } from '../services/stepUp.js'
 const router = Router();
 const authDistributedLimiter = distributedRateLimit({
   scope: 'auth',
-  limit: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 15),
+  limit: Number(process.env.RATE_LIMIT_AUTH_DISTRIBUTED_MAX ?? 50),
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
 });
 const authIdentityLimiter = distributedRateLimit({
   scope: 'auth-identity',
-  limit: 10,
-  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_AUTH_IDENTITY_MAX ?? 25),
+  windowMs: Number(process.env.RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS ?? 15 * 60 * 1000),
   key: (req) => {
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     return `${req.ip}:${email || 'unknown'}`;
