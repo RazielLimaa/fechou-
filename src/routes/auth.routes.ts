@@ -92,6 +92,11 @@ const stepUpSchema = z.object({
   password: z.string().min(1).max(128).optional(),
 });
 
+const PAYLOAD_AGNOSTIC_STEPUP_SCOPES = new Set([
+  'user.pix.update',
+  'user.pix.delete',
+]);
+
 // ── POST /register ────────────────────────────────────────────────────────────
 
 router.post('/register', authRateLimiter, authDistributedLimiter, authIdentityLimiter, async (req, res) => {
@@ -305,7 +310,9 @@ router.post('/step-up/request', authenticate, authDistributedLimiter, async (req
     if (!ok) return res.status(403).json({ message: 'Step-up auth required.' });
   }
 
-  const payloadHash = buildStepUpPayloadHash(parsed.data.payload);
+  const payloadHash = PAYLOAD_AGNOSTIC_STEPUP_SCOPES.has(parsed.data.scope)
+    ? buildStepUpPayloadHash({})
+    : buildStepUpPayloadHash(parsed.data.payload);
   const token = await issueStepUpToken({
     userId,
     scope: parsed.data.scope,
