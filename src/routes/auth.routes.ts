@@ -12,13 +12,13 @@ import { buildStepUpPayloadHash, issueStepUpToken } from '../services/stepUp.js'
 const router = Router();
 const authDistributedLimiter = distributedRateLimit({
   scope: 'auth',
-  limit: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 15),
+  limit: Number(process.env.RATE_LIMIT_AUTH_DISTRIBUTED_MAX ?? 50),
   windowMs: Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000),
 });
 const authIdentityLimiter = distributedRateLimit({
   scope: 'auth-identity',
-  limit: 10,
-  windowMs: 15 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_AUTH_IDENTITY_MAX ?? 25),
+  windowMs: Number(process.env.RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS ?? 15 * 60 * 1000),
   key: (req) => {
     const email = String(req.body?.email ?? '').trim().toLowerCase();
     return `${req.ip}:${email || 'unknown'}`;
@@ -91,6 +91,11 @@ const stepUpSchema = z.object({
   payload: z.record(z.unknown()).default({}),
   password: z.string().min(1).max(128).optional(),
 });
+
+const PAYLOAD_AGNOSTIC_STEPUP_SCOPES = new Set([
+  'user.pix.update',
+  'user.pix.delete',
+]);
 
 // ── POST /register ────────────────────────────────────────────────────────────
 
@@ -305,7 +310,9 @@ router.post('/step-up/request', authenticate, authDistributedLimiter, async (req
     if (!ok) return res.status(403).json({ message: 'Step-up auth required.' });
   }
 
-  const payloadHash = buildStepUpPayloadHash(parsed.data.payload);
+  const payloadHash = PAYLOAD_AGNOSTIC_STEPUP_SCOPES.has(parsed.data.scope)
+    ? buildStepUpPayloadHash({})
+    : buildStepUpPayloadHash(parsed.data.payload);
   const token = await issueStepUpToken({
     userId,
     scope: parsed.data.scope,
