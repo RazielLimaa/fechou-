@@ -156,9 +156,10 @@ const WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
 
 export const authRateLimiter = rateLimit({
   windowMs: WINDOW_MS,
-  max: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 10),
+  max: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 50),
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS',
   message: {
     message: 'Muitas tentativas de autenticação. Aguarde e tente novamente.',
   },
@@ -166,10 +167,10 @@ export const authRateLimiter = rateLimit({
 
 export const apiRateLimiter = rateLimit({
   windowMs: WINDOW_MS,
-  max: Number(process.env.RATE_LIMIT_API_MAX ?? 200),
+  max: Number(process.env.RATE_LIMIT_API_MAX ?? 1200),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.originalUrl.startsWith('/api/payments/webhook'),
+  skip: (req) => req.method === 'OPTIONS' || req.originalUrl.startsWith('/api/payments/webhook'),
   message: {
     message: 'Muitas requisições. Tente novamente em instantes.',
   },
@@ -177,9 +178,10 @@ export const apiRateLimiter = rateLimit({
 
 export const sensitiveRateLimiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_SENSITIVE_WINDOW_MS ?? 10 * 60 * 1000),
-  max: Number(process.env.RATE_LIMIT_SENSITIVE_MAX ?? 30),
+  max: Number(process.env.RATE_LIMIT_SENSITIVE_MAX ?? 150),
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => req.method === 'OPTIONS',
   message: {
     message: 'Muitas tentativas em rota sensível. Tente novamente em alguns minutos.',
   },
