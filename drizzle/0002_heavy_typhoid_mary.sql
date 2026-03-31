@@ -1,9 +1,45 @@
-CREATE TYPE "public"."contract_status" AS ENUM('draft', 'editing', 'finalized');--> statement-breakpoint
-CREATE TYPE "public"."mercado_pago_auth_method" AS ENUM('oauth', 'api_key');--> statement-breakpoint
-CREATE TYPE "public"."proposal_lifecycle_status" AS ENUM('DRAFT', 'SENT', 'ACCEPTED', 'PAID', 'CANCELLED');--> statement-breakpoint
-CREATE TYPE "public"."proposal_payment_status" AS ENUM('PENDING', 'CONFIRMED', 'FAILED');--> statement-breakpoint
-CREATE TYPE "public"."payment_provider" AS ENUM('mercadopago');--> statement-breakpoint
-CREATE TYPE "public"."user_plan_type" AS ENUM('free', 'pro', 'premium');--> statement-breakpoint
+DO $$ BEGIN
+  CREATE TYPE "public"."contract_status" AS ENUM('draft', 'editing', 'finalized');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."mercado_pago_auth_method" AS ENUM('oauth', 'api_key');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."proposal_lifecycle_status" AS ENUM('DRAFT', 'SENT', 'ACCEPTED', 'PAID', 'CANCELLED');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."proposal_payment_status" AS ENUM('PENDING', 'CONFIRMED', 'FAILED');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."payment_provider" AS ENUM('mercadopago');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."user_plan_type" AS ENUM('free', 'pro', 'premium');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "clauses" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"title" text,
@@ -15,6 +51,7 @@ CREATE TABLE IF NOT EXISTS "clauses" (
 	"created_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "contract_clauses" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"contract_id" integer NOT NULL,
@@ -23,6 +60,7 @@ CREATE TABLE IF NOT EXISTS "contract_clauses" (
 	"order_index" integer DEFAULT 0 NOT NULL
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "contract_ratings" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"contract_id" integer NOT NULL,
@@ -34,6 +72,7 @@ CREATE TABLE IF NOT EXISTS "contract_ratings" (
 	CONSTRAINT "contract_ratings_contract_id_unique" UNIQUE("contract_id")
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "contract_templates" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"name" varchar(160) NOT NULL,
@@ -41,6 +80,7 @@ CREATE TABLE IF NOT EXISTS "contract_templates" (
 	"is_default" boolean DEFAULT false NOT NULL
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "contracts" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
@@ -78,6 +118,7 @@ CREATE TABLE IF NOT EXISTS "contracts" (
 	CONSTRAINT "contracts_share_token_hash_unique" UNIQUE("share_token_hash")
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "mercado_pago_accounts" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"user_id" integer NOT NULL,
@@ -91,6 +132,7 @@ CREATE TABLE IF NOT EXISTS "mercado_pago_accounts" (
 	CONSTRAINT "mercado_pago_accounts_user_id_unique" UNIQUE("user_id")
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "payments" (
 	"id" serial PRIMARY KEY NOT NULL,
 	"proposal_id" integer NOT NULL,
@@ -105,6 +147,7 @@ CREATE TABLE IF NOT EXISTS "payments" (
 	CONSTRAINT "payments_proposal_id_unique" UNIQUE("proposal_id")
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "user_profiles" (
 	"user_id" integer PRIMARY KEY NOT NULL,
 	"slug" varchar(60),
@@ -124,6 +167,7 @@ CREATE TABLE IF NOT EXISTS "user_profiles" (
 	CONSTRAINT "user_profiles_slug_unique" UNIQUE("slug")
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "user_scores" (
 	"user_id" integer PRIMARY KEY NOT NULL,
 	"score" integer DEFAULT 0 NOT NULL,
@@ -133,101 +177,138 @@ CREATE TABLE IF NOT EXISTS "user_scores" (
 	"updated_at" timestamp DEFAULT now() NOT NULL
 );
 --> statement-breakpoint
+
 CREATE TABLE IF NOT EXISTS "users_plan" (
 	"user_id" integer PRIMARY KEY NOT NULL,
 	"plan_type" "user_plan_type" DEFAULT 'free' NOT NULL
 );
 --> statement-breakpoint
-ALTER TABLE "payment_sessions" ADD COLUMN "mercado_pago_preference_id" varchar(140);--> statement-breakpoint
-ALTER TABLE "payment_sessions" ADD COLUMN "mercado_pago_payment_id" varchar(140);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "share_token_hash" varchar(128);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "share_token_expires_at" timestamp;--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signed_at" timestamp;--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signer_name" varchar(140);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signer_document" varchar(40);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_hash" varchar(128);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signer_ip" varchar(80);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signer_user_agent" varchar(300);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_ciphertext" text;--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_iv" varchar(255);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_auth_tag" varchar(255);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_key_version" varchar(20);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "contract_signature_mime_type" varchar(40);--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "payment_released_at" timestamp;--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "lifecycle_status" "proposal_lifecycle_status" DEFAULT 'DRAFT' NOT NULL;--> statement-breakpoint
-ALTER TABLE "proposals" ADD COLUMN "public_hash" varchar(120);--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "pix_key" text;--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "pix_key_type" varchar(20);--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "provider_signature_ciphertext" text;--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "provider_signature_iv" varchar(255);--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "provider_signature_auth_tag" varchar(255);--> statement-breakpoint
-ALTER TABLE "users" ADD COLUMN "provider_signature_updated_at" timestamp;--> statement-breakpoint
+
+ALTER TABLE "payment_sessions" ADD COLUMN IF NOT EXISTS "mercado_pago_preference_id" varchar(140);--> statement-breakpoint
+ALTER TABLE "payment_sessions" ADD COLUMN IF NOT EXISTS "mercado_pago_payment_id" varchar(140);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "share_token_hash" varchar(128);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "share_token_expires_at" timestamp;--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signed_at" timestamp;--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signer_name" varchar(140);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signer_document" varchar(40);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_hash" varchar(128);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signer_ip" varchar(80);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signer_user_agent" varchar(300);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_ciphertext" text;--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_iv" varchar(255);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_auth_tag" varchar(255);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_key_version" varchar(20);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "contract_signature_mime_type" varchar(40);--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "payment_released_at" timestamp;--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "lifecycle_status" "proposal_lifecycle_status" DEFAULT 'DRAFT' NOT NULL;--> statement-breakpoint
+ALTER TABLE "proposals" ADD COLUMN IF NOT EXISTS "public_hash" varchar(120);--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pix_key" text;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "pix_key_type" varchar(20);--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provider_signature_ciphertext" text;--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provider_signature_iv" varchar(255);--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provider_signature_auth_tag" varchar(255);--> statement-breakpoint
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "provider_signature_updated_at" timestamp;--> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contract_clauses" ADD CONSTRAINT "contract_clauses_contract_id_contracts_id_fk" FOREIGN KEY ("contract_id") REFERENCES "public"."contracts"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contract_clauses" ADD CONSTRAINT "contract_clauses_clause_id_clauses_id_fk" FOREIGN KEY ("clause_id") REFERENCES "public"."clauses"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contract_ratings" ADD CONSTRAINT "contract_ratings_contract_id_contracts_id_fk" FOREIGN KEY ("contract_id") REFERENCES "public"."contracts"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contract_ratings" ADD CONSTRAINT "contract_ratings_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contracts" ADD CONSTRAINT "contracts_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "contracts" ADD CONSTRAINT "contracts_template_id_contract_templates_id_fk" FOREIGN KEY ("template_id") REFERENCES "public"."contract_templates"("id") ON DELETE set null ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "mercado_pago_accounts" ADD CONSTRAINT "mercado_pago_accounts_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "payments" ADD CONSTRAINT "payments_proposal_id_proposals_id_fk" FOREIGN KEY ("proposal_id") REFERENCES "public"."proposals"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "user_profiles" ADD CONSTRAINT "user_profiles_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "user_scores" ADD CONSTRAINT "user_scores_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 DO $$ BEGIN
  ALTER TABLE "users_plan" ADD CONSTRAINT "users_plan_user_id_users_id_fk" FOREIGN KEY ("user_id") REFERENCES "public"."users"("id") ON DELETE cascade ON UPDATE no action;
 EXCEPTION
  WHEN duplicate_object THEN null;
 END $$;
 --> statement-breakpoint
+
 ALTER TABLE "user_subscriptions" DROP COLUMN IF EXISTS "id";--> statement-breakpoint
-ALTER TABLE "proposals" ADD CONSTRAINT "proposals_share_token_hash_unique" UNIQUE("share_token_hash");--> statement-breakpoint
-ALTER TABLE "proposals" ADD CONSTRAINT "proposals_public_hash_unique" UNIQUE("public_hash");
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'proposals_share_token_hash_unique'
+  ) THEN
+    ALTER TABLE "proposals"
+      ADD CONSTRAINT "proposals_share_token_hash_unique" UNIQUE("share_token_hash");
+  END IF;
+END $$;
+--> statement-breakpoint
+
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1
+    FROM pg_constraint
+    WHERE conname = 'proposals_public_hash_unique'
+  ) THEN
+    ALTER TABLE "proposals"
+      ADD CONSTRAINT "proposals_public_hash_unique" UNIQUE("public_hash");
+  END IF;
+END $$;

@@ -32,8 +32,7 @@ if (process.env.NODE_ENV === 'production') {
 
 const allowedOrigins = (
   process.env.ALLOWED_ORIGINS ||
-  process.env.CORS_ORIGIN ||
-  'http://localhost:5173,http://localhost:3000'
+  'http://localhost:5173, http://localhost:3000'
 )
   .split(',')
   .map((s) => s.trim())
@@ -44,8 +43,33 @@ const isProduction = process.env.NODE_ENV === 'production';
 app.use(
   helmet({
     crossOriginEmbedderPolicy: false,
-    crossOriginOpenerPolicy: false,
-    contentSecurityPolicy: false,
+    crossOriginOpenerPolicy: {
+      policy: 'same-origin-allow-popups',
+    },
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        baseUri: ["'self'"],
+        objectSrc: ["'none'"],
+        frameAncestors: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        fontSrc: ["'self'", "https:", "data:"],
+        styleSrc: ["'self'", "'unsafe-inline'", "https://fonts.googleapis.com"],
+        scriptSrc: ["'self'"],
+        connectSrc: ["'self'", ...allowedOrigins],
+        formAction: ["'self'"],
+      },
+    },
+    referrerPolicy: {
+      policy: 'no-referrer',
+    },
+    hsts: isProduction
+      ? {
+          maxAge: 31536000,
+          includeSubDomains: true,
+          preload: true,
+        }
+      : false,
   })
 );
 
@@ -72,9 +96,12 @@ const corsOptions: CorsOptions = {
     'x-requested-with',
     'X-CSRF-Token',
     'x-csrf-token',
+    'X-Step-Up-Token',
+    'x-step-up-token',
     'idempotency-key',
     'Accept',
     'Origin',
+    'pix-key',
     'Cache-Control',
     'Pragma',
     'Expires',
