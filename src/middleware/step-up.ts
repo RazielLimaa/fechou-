@@ -3,6 +3,29 @@ import { consumeStepUpToken, buildStepUpPayloadHash } from '../services/stepUp.j
 import type { AuthenticatedRequest } from './auth.js';
 import { logSecurityEvent } from '../services/securityEvents.js';
 
+function respondStepUpError(
+  res: Response,
+  input: {
+    scope: string;
+    code: 'STEP_UP_REQUIRED' | 'STEP_UP_INVALID_OR_REPLAY';
+    message: string;
+    title: string;
+    detail: string;
+  }
+) {
+  return res.status(403).json({
+    message: input.message,
+    code: input.code,
+    title: input.title,
+    detail: input.detail,
+    nextAction: {
+      type: 'REQUEST_STEP_UP',
+      scope: input.scope,
+      retryable: true,
+    },
+  });
+}
+
 export function requireStepUp(scope: string, payload: (req: Request) => unknown) {
   return async (req: AuthenticatedRequest, res: Response, next: NextFunction) => {
     const userId = req.user?.id;
@@ -19,7 +42,13 @@ export function requireStepUp(scope: string, payload: (req: Request) => unknown)
         route: req.originalUrl,
         reason: scope,
       });
-      return res.status(403).json({ message: 'Step-up auth required.' });
+      return respondStepUpError(res, {
+        scope,
+        code: 'STEP_UP_REQUIRED',
+        message: 'Confirmação de segurança necessária.',
+        title: 'Confirme sua identidade',
+        detail: 'Para concluir esta ação sensível, confirme sua senha novamente.',
+      });
     }
 
     const payloadHash = buildStepUpPayloadHash(payload(req));
@@ -40,7 +69,13 @@ export function requireStepUp(scope: string, payload: (req: Request) => unknown)
         route: req.originalUrl,
         reason: scope,
       });
-      return res.status(403).json({ message: 'Step-up token inválido, expirado ou reutilizado.' });
+      return respondStepUpError(res, {
+        scope,
+        code: 'STEP_UP_INVALID_OR_REPLAY',
+        message: 'Sua confirmação expirou ou já foi utilizada.',
+        title: 'Confirmação expirada',
+        detail: 'Por segurança, gere uma nova confirmação e tente novamente.',
+      });
     }
 
     next();

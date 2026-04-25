@@ -22,6 +22,27 @@
       "when": 1774078190809,
       "tag": "0002_heavy_typhoid_mary",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1775000000000,
+      "tag": "0006_password_reset",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1775188800000,
+      "tag": "0007_password_reset_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1776902400000,
+      "tag": "0008_secure_mercado_pago_payments",
+      "breakpoints": true
     }
   ]
 }

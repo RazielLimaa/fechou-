@@ -56,10 +56,9 @@ export async function verifyGoogleCode(code: string, requestedRedirectUri?: stri
   const redirects = allowedRedirectUris();
 
   const preferredRedirect = String(requestedRedirectUri ?? '').trim();
-  const isProd = process.env.NODE_ENV === 'production';
   const canUseRequestedRedirect =
     preferredRedirect.length > 0 &&
-    (redirects.includes(preferredRedirect) || (!isProd && /^https?:\/\/|^postmessage$/.test(preferredRedirect)));
+    redirects.includes(preferredRedirect);
 
   const orderedRedirects = canUseRequestedRedirect
     ? [preferredRedirect, ...redirects.filter((item) => item !== preferredRedirect)]
@@ -154,7 +153,7 @@ const jwtAudience = process.env.JWT_AUDIENCE ?? 'fechou-client';
 const jwtAlgorithm: Algorithm = 'HS256';
 
 const expiresIn: SignOptions['expiresIn'] =
-  (process.env.JWT_EXPIRES_IN as SignOptions['expiresIn']) ?? '1d';
+  (process.env.JWT_EXPIRES_IN as SignOptions['expiresIn']) ?? '15m';
 
 function isValidPayload(payload: unknown): payload is TokenPayload {
   return (

@@ -1,5 +1,15 @@
 import crypto from 'crypto';
 import { storage } from '../storage.js';
+import { getTrustedFrontendOrigin } from '../lib/httpSecurity.js';
+import {
+  createMercadoPagoCheckoutPreference,
+  fetchMercadoPagoPaymentById,
+  getMercadoPagoPlatformAccessToken,
+  resolveMercadoPagoCheckoutUrl as resolveMercadoPagoCheckoutUrlInternal,
+} from './payments/mercadoPagoProvider.js';
+import {
+  verifyMercadoPagoWebhookSignature as verifyMercadoPagoWebhookSignatureInternal,
+} from './payments/mercadoPagoSecurity.js';
 
 const mpApiBaseUrl = process.env.MP_API_BASE_URL ?? 'https://api.mercadopago.com';
 const mpAuthBaseUrl = process.env.MP_AUTH_BASE_URL ?? 'https://auth.mercadopago.com.br';
@@ -7,10 +17,14 @@ const mpAuthBaseUrl = process.env.MP_AUTH_BASE_URL ?? 'https://auth.mercadopago.
 const clientId = process.env.MP_CLIENT_ID;
 const clientSecret = process.env.MP_CLIENT_SECRET;
 const appUrl = process.env.APP_URL;
-const frontendUrl = process.env.FRONTEND_URL;
 const redirectUri = process.env.MP_REDIRECT_URI ?? (appUrl ? `${appUrl}/api/mercadopago/callback` : undefined);
 const tokensEncryptionKey = process.env.TOKENS_ENCRYPTION_KEY;
-const webhookSecret = process.env.MERCADO_PAGO_WEBHOOK_SECRET;
+
+type MercadoPagoCheckoutPreference = {
+  id: string;
+  init_point?: string | null;
+  sandbox_init_point?: string | null;
+};
 
 if (!clientId || !clientSecret || !redirectUri) {
   console.warn('Mercado Pago OAuth não totalmente configurado (MP_CLIENT_ID, MP_CLIENT_SECRET, MP_REDIRECT_URI).');
@@ -36,13 +50,35 @@ function getEncryptionKeyBuffer() {
   return key;
 }
 
+function getPlatformAccessToken() {
+  const accessToken = String(
+    process.env.MP_PLATFORM_ACCESS_TOKEN ??
+    process.env.MP_ACCESS_TOKEN ??
+    ''
+  ).trim();
+
+  if (!accessToken) {
+    throw new Error('MP_PLATFORM_ACCESS_TOKEN ou MP_ACCESS_TOKEN não definido para checkout público.');
+  }
+
+  return accessToken;
+}
+
+function isMercadoPagoTestAccessToken(accessToken: string) {
+  return accessToken.trim().toUpperCase().startsWith('TEST-');
+}
+
+export function resolveMercadoPagoCheckoutUrl(
+  preference: Pick<MercadoPagoCheckoutPreference, 'init_point' | 'sandbox_init_point'>,
+  accessToken?: string
+) {
+  return resolveMercadoPagoCheckoutUrlInternal(preference, accessToken);
+}
+
 export function encryptToken(plainText: string) {
   const key = getEncryptionKeyBuffer();
   if (!key) {
-    if (process.env.NODE_ENV === 'production') {
-      throw new Error('TOKENS_ENCRYPTION_KEY ausente/inválida em produção.');
-    }
-    return plainText;
+    throw new Error('TOKENS_ENCRYPTION_KEY ausente ou inválida.');
   }
 
   const iv = crypto.randomBytes(12);
@@ -72,7 +108,7 @@ export function decryptToken(cipherText: string) {
 }
 
 function assertConfig() {
-  if (!clientId || !clientSecret || !redirectUri || !frontendUrl) {
+  if (!clientId || !clientSecret || !redirectUri) {
     throw new Error('Mercado Pago OAuth não configurado corretamente.');
   }
 }
@@ -184,6 +220,7 @@ export async function createCheckoutPreferenceWithFreelancerToken(input: {
   notificationUrl: string;
   frontendPublicPath: string;
 }) {
+  const frontendOrigin = getTrustedFrontendOrigin();
   const unitPrice = Number((input.amountCents / 100).toFixed(2));
 
   const response = await fetch(`${mpApiBaseUrl}/checkout/preferences`, {
@@ -204,9 +241,9 @@ export async function createCheckoutPreferenceWithFreelancerToken(input: {
       external_reference: `fechou:${input.proposalId}`,
       notification_url: input.notificationUrl,
       back_urls: {
-        success: `${frontendUrl}${input.frontendPublicPath}?status=success`,
-        failure: `${frontendUrl}${input.frontendPublicPath}?status=failure`,
-        pending: `${frontendUrl}${input.frontendPublicPath}?status=pending`,
+        success: `${frontendOrigin}${input.frontendPublicPath}?status=success`,
+        failure: `${frontendOrigin}${input.frontendPublicPath}?status=failure`,
+        pending: `${frontendOrigin}${input.frontendPublicPath}?status=pending`,
       },
       auto_return: 'approved',
     }),
@@ -226,23 +263,15 @@ export async function createCheckoutPreferenceWithFreelancerToken(input: {
 }
 
 export async function fetchPaymentById(input: { accessToken: string; paymentId: string }) {
-  const response = await fetch(`${mpApiBaseUrl}/v1/payments/${input.paymentId}`, {
-    method: 'GET',
-    headers: {
-      Authorization: `Bearer ${input.accessToken}`,
-      'Content-Type': 'application/json',
-    },
-  });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Falha ao consultar pagamento MP: ${response.status} ${errorBody}`);
-  }
-
-  return response.json() as Promise<{
+  return fetchMercadoPagoPaymentById({
+    accessToken: input.accessToken,
+    paymentId: input.paymentId,
+  }) as Promise<{
     id: number;
     status: string;
+    status_detail?: string | null;
     transaction_amount: number;
+    currency_id?: string | null;
     external_reference: string | null;
     order?: { id?: string | null };
   }>;
@@ -266,49 +295,26 @@ export async function createMercadoPagoPreference(input: {
     unit_price: number;
   };
 }) {
-  const accessToken = process.env.MP_PLATFORM_ACCESS_TOKEN;
-  if (!accessToken) {
-    throw new Error('MP_PLATFORM_ACCESS_TOKEN não definido para checkout público legado.');
-  }
+  const accessToken = getMercadoPagoPlatformAccessToken();
 
-  const response = await fetch(`${mpApiBaseUrl}/checkout/preferences`, {
-    method: 'POST',
-    headers: {
-      Authorization: `Bearer ${accessToken}`,
-      'Content-Type': 'application/json',
-      ...(input.idempotencyKey ? { 'X-Idempotency-Key': input.idempotencyKey } : {}),
-    },
-    body: JSON.stringify({
-      external_reference: input.externalReference,
-      payer: input.payerEmail ? { email: input.payerEmail } : undefined,
-      notification_url: input.notificationUrl,
-      back_urls: {
-        success: input.successUrl,
-        failure: input.failureUrl,
-        pending: input.pendingUrl,
-      },
-      binary_mode: true,
-      items: [input.item],
-    }),
+  return createMercadoPagoCheckoutPreference({
+    accessToken,
+    externalReference: input.externalReference,
+    payerEmail: input.payerEmail,
+    notificationUrl: input.notificationUrl,
+    successUrl: input.successUrl,
+    failureUrl: input.failureUrl,
+    pendingUrl: input.pendingUrl,
+    title: input.item.title,
+    description: input.item.description,
+    amount: input.item.unit_price,
+    currencyId: input.item.currency_id,
+    idempotencyKey: input.idempotencyKey ?? crypto.randomUUID(),
   });
-
-  if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Falha ao criar preferência MP (legado): ${response.status} ${errorBody}`);
-  }
-
-  return response.json() as Promise<{
-    id: string;
-    init_point: string;
-    sandbox_init_point?: string;
-  }>;
 }
 
 export async function fetchMercadoPagoPayment(paymentId: string) {
-  const accessToken = process.env.MP_PLATFORM_ACCESS_TOKEN;
-  if (!accessToken) {
-    throw new Error('MP_PLATFORM_ACCESS_TOKEN não definido para webhook legado.');
-  }
+  const accessToken = getMercadoPagoPlatformAccessToken();
 
   const payment = await fetchPaymentById({ accessToken, paymentId });
   return {
@@ -323,25 +329,5 @@ export function verifyMercadoPagoWebhookSignature(input: {
   xRequestId?: string;
   dataId?: string;
 }) {
-  if (!webhookSecret) return false;
-  if (!input.xSignature || !input.xRequestId || !input.dataId) return false;
-
-  const chunks = input.xSignature.split(',').reduce<Record<string, string>>((acc, part) => {
-    const [k, v] = part.trim().split('=');
-    if (k && v) acc[k] = v;
-    return acc;
-  }, {});
-
-  const ts = chunks.ts;
-  const providedV1 = chunks.v1;
-  if (!ts || !providedV1) return false;
-
-  const manifest = `id:${input.dataId};request-id:${input.xRequestId};ts:${ts};`;
-  const expected = crypto.createHmac('sha256', webhookSecret).update(manifest).digest('hex');
-
-  const providedBuffer = Buffer.from(providedV1, 'hex');
-  const expectedBuffer = Buffer.from(expected, 'hex');
-  if (providedBuffer.length !== expectedBuffer.length) return false;
-
-  return crypto.timingSafeEqual(providedBuffer, expectedBuffer);
+  return verifyMercadoPagoWebhookSignatureInternal(input);
 }

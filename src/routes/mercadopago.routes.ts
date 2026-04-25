@@ -14,6 +14,7 @@ import { storage } from '../storage.js';
 import { z } from 'zod';
 import { sensitiveRateLimiter } from '../middleware/security.js';
 import { requireStepUp } from '../middleware/step-up.js';
+import { getTrustedFrontendOrigin, timingSafeEqualText } from '../lib/httpSecurity.js';
 
 const router = Router();
 router.use(sensitiveRateLimiter);
@@ -54,7 +55,7 @@ router.get('/callback', async (req, res) => {
   res.clearCookie(STATE_COOKIE, { path: '/api/mercadopago/callback' });
   const [userIdRaw, expectedState] = cookieValue.split(':');
   const userId = Number(userIdRaw);
-  if (!Number.isInteger(userId) || userId <= 0 || !expectedState || expectedState !== state) {
+  if (!Number.isInteger(userId) || userId <= 0 || !expectedState || !timingSafeEqualText(expectedState, state)) {
     return res.status(400).json({ message: 'State inválido ou expirado.' });
   }
 
@@ -71,7 +72,7 @@ router.get('/callback', async (req, res) => {
       expiresAt,
     });
 
-    const redirect = `${process.env.FRONTEND_URL}/app/settings?mp=connected`;
+    const redirect = `${getTrustedFrontendOrigin()}/app/settings?mp=connected`;
     return res.redirect(302, redirect);
   } catch (error) {
     console.error(error);

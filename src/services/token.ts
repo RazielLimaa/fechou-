@@ -20,6 +20,14 @@ export interface TokenMeta {
   ipAddress?: string | null;
 }
 
+interface RecentRefreshRotation {
+  tokenHash: string;
+  userId: number;
+  newRawToken: string;
+  fingerprint: string | null;
+  expiresAtMs: number;
+}
+
 export class AuthError extends Error {
   constructor(message: string, public readonly status: number = 401) {
     super(message);
@@ -33,6 +41,9 @@ export function hashToken(raw: string): string {
   return crypto.createHash("sha256").update(raw).digest("hex");
 }
 
+const recentRefreshRotations = new Map<string, RecentRefreshRotation>();
+const REFRESH_REUSE_GRACE_MS = Number(process.env.JWT_REFRESH_REUSE_GRACE_MS ?? 5_000);
+
 function generateSecureToken(bytes = 48): string {
   return crypto.randomBytes(bytes).toString("hex");
 }
@@ -44,6 +55,65 @@ function parseDurationMs(str: string): number {
   return parseInt(match[1]) * map[match[2]];
 }
 
+function normalizeMetaValue(value: string | null | undefined, maxLength: number): string {
+  return String(value ?? "").trim().slice(0, maxLength).toLowerCase();
+}
+
+function buildRefreshFingerprint(meta: TokenMeta = {}): string | null {
+  const ip = normalizeMetaValue(meta.ipAddress, 80);
+  const ua = normalizeMetaValue(meta.userAgent, 256);
+  if (!ip && !ua) return null;
+
+  return crypto
+    .createHash("sha256")
+    .update(`${ip}|${ua}`)
+    .digest("hex");
+}
+
+function cleanupRecentRefreshRotations(nowMs = Date.now()) {
+  for (const [tokenHash, entry] of recentRefreshRotations.entries()) {
+    if (entry.expiresAtMs <= nowMs) {
+      recentRefreshRotations.delete(tokenHash);
+    }
+  }
+}
+
+function getRecentRefreshRotation(tokenHash: string, meta: TokenMeta = {}) {
+  cleanupRecentRefreshRotations();
+
+  const recent = recentRefreshRotations.get(tokenHash);
+  if (!recent) return null;
+
+  const fingerprint = buildRefreshFingerprint(meta);
+  if (!fingerprint || !recent.fingerprint || fingerprint !== recent.fingerprint) {
+    return null;
+  }
+
+  return {
+    userId: recent.userId,
+    newRawToken: recent.newRawToken,
+  };
+}
+
+function rememberRefreshRotation(input: {
+  tokenHash: string;
+  userId: number;
+  newRawToken: string;
+  meta?: TokenMeta;
+}) {
+  cleanupRecentRefreshRotations();
+  const fingerprint = buildRefreshFingerprint(input.meta);
+  if (!fingerprint) return;
+
+  recentRefreshRotations.set(input.tokenHash, {
+    tokenHash: input.tokenHash,
+    userId: input.userId,
+    newRawToken: input.newRawToken,
+    fingerprint,
+    expiresAtMs: Date.now() + Math.max(1_000, REFRESH_REUSE_GRACE_MS),
+  });
+}
+
 // ── Access Token (JWT, curta duração, stateless) ──────────────────────────────
 
 export function signAccessToken(user: TokenUser): string {
@@ -51,6 +121,7 @@ export function signAccessToken(user: TokenUser): string {
     { sub: user.id.toString(), email: user.email, name: user.name },
     process.env.JWT_SECRET!,
     {
+      algorithm: "HS256",
       expiresIn: (process.env.JWT_EXPIRES_IN ?? "15m") as jwt.SignOptions["expiresIn"],
       issuer:   process.env.JWT_ISSUER ?? "fechou-api",
       audience: process.env.JWT_AUDIENCE ?? "fechou-client",
@@ -60,6 +131,7 @@ export function signAccessToken(user: TokenUser): string {
 
 export function verifyAccessToken(token: string): jwt.JwtPayload {
   return jwt.verify(token, process.env.JWT_SECRET!, {
+    algorithms: ["HS256"],
     issuer:   process.env.JWT_ISSUER ?? "fechou-api",
     audience: process.env.JWT_AUDIENCE ?? "fechou-client",
   }) as jwt.JwtPayload;
@@ -109,6 +181,8 @@ export async function rotateRefreshToken(
   meta: TokenMeta = {}
 ): Promise<{ userId: number; newRawToken: string }> {
   const tokenHash = hashToken(rawToken);
+  const recentRotation = getRecentRefreshRotation(tokenHash, meta);
+  if (recentRotation) return recentRotation;
 
   // Busca o token armazenado
   const stored = await db
@@ -122,6 +196,11 @@ export async function rotateRefreshToken(
 
   // ── Detecção de roubo ─────────────────────────────────────────────────────
   if (stored.revoked) {
+    const reusedRecentRotation = getRecentRefreshRotation(tokenHash, meta);
+    if (reusedRecentRotation) {
+      return reusedRecentRotation;
+    }
+
     // Token já foi usado → revoga família toda
     await db
       .update(refreshTokens)
@@ -163,6 +242,13 @@ export async function rotateRefreshToken(
     lastUsedAt: new Date(),
     userAgent: meta.userAgent?.slice(0, 512) ?? null,
     ipAddress: meta.ipAddress?.slice(0, 80)  ?? null,
+  });
+
+  rememberRefreshRotation({
+    tokenHash,
+    userId: stored.userId,
+    newRawToken: newRaw,
+    meta,
   });
 
   return { userId: stored.userId, newRawToken: newRaw };

@@ -10,7 +10,7 @@ import { db } from "../db/index.js";
 import { contracts } from "../db/schema.js";
 import {
   createCheckoutPreferenceWithFreelancerToken,
-  getValidFreelancerAccessToken,
+  resolveMercadoPagoCheckoutUrl,
 } from "../services/mercadoPago.js";
 import {
   extractPngBufferFromDataUrl,
@@ -18,7 +18,14 @@ import {
   sha256Hex,
 } from "../lib/signatureCrypto.js";
 import { contractService } from "../services/contracts/contract.service.js";
+import { contractRenderService } from "../services/contracts/contract-render.service.js";
 import { requireStepUp } from "../middleware/step-up.js";
+import { getPublicAppBaseUrl } from "../lib/httpSecurity.js";
+import { cpfCnpjSchema, optionalCpfCnpjSchema } from "../lib/brDocument.js";
+import {
+  createOwnerProposalCheckoutProPayment,
+  PaymentSecurityError,
+} from "../services/payments/mercadoPagoSecure.js";
 
 const router = Router();
 
@@ -39,9 +46,35 @@ function normalizeAndValidatePublicToken(raw: unknown): string | null {
   return token.toLowerCase();
 }
 
+function collapseWhitespace(value: string) {
+  return value.replace(/\s+/g, " ").trim();
+}
+
+function isSafeSignerName(value: string) {
+  return /^[\p{L}\p{M}\p{N}][\p{L}\p{M}\p{N} .,'-]{1,139}$/u.test(value);
+}
+
 function setPublicNoCache(res: Response) {
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Pragma", "no-cache");
+}
+
+function setPublicPreviewDocumentHeaders(res: Response, etag: string) {
+  res.setHeader("Cache-Control", "no-store, max-age=0");
+  res.setHeader("ETag", `"${etag}"`);
+  res.setHeader("Vary", "Origin");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.setHeader("X-Robots-Tag", "noindex, noarchive, nosnippet, noimageindex");
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'",
+  );
+}
+
+function normalizePreviewStateTag(value: unknown) {
+  const tag = String(value ?? "").trim().replace(/^W\//i, "").replaceAll('"', "");
+  return /^[a-f0-9]{64}$/i.test(tag) ? tag.toLowerCase() : null;
 }
 
 function safeUserAgent(req: Request) {
@@ -49,45 +82,52 @@ function safeUserAgent(req: Request) {
   return ua.length > 300 ? ua.slice(0, 300) : ua;
 }
 
-function getBaseUrlFromRequest(req: Request): string {
-  const envBase = String(process.env.APP_URL ?? "").trim().replace(/\/+$/, "");
-  if (envBase) return envBase;
+function getBaseUrlFromRequest(_req: Request): string {
+  return getPublicAppBaseUrl();
+}
 
-  const proto = (req.headers["x-forwarded-proto"]
-    ? String(req.headers["x-forwarded-proto"])
-    : req.protocol)
-    .split(",")[0]
-    .trim();
+async function renderOfficialPublicContractPreviewByTokenHash(
+  tokenHash: string,
+  knownStateHash?: string | null
+) {
+  const contract = await contractService.getContractByShareTokenHash(tokenHash);
+  if (!contract) return null;
+  if (!contract.shareTokenExpiresAt || contract.shareTokenExpiresAt.getTime() < Date.now()) return null;
 
-  const host = (req.headers["x-forwarded-host"]
-    ? String(req.headers["x-forwarded-host"])
-    : String(req.headers.host ?? ""))
-    .split(",")[0]
-    .trim();
+  const rendered = await contractRenderService.renderContract(
+    contract.id,
+    contract.userId,
+    knownStateHash,
+    { publicPreview: true }
+  );
 
-  if (!host) return "http://localhost:3001";
-  return `${proto}://${host}`;
+  if (!rendered) return null;
+
+  return {
+    contract,
+    rendered,
+  };
 }
 
 const publicProposalGetLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 60,
+  windowMs: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_GET_WINDOW_MS ?? 10 * 60 * 1000),
+  max: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_GET_MAX ?? 180),
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
 });
 
 const publicProposalSignLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 5,
+  windowMs: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_SIGN_WINDOW_MS ?? 10 * 60 * 1000),
+  max: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_SIGN_MAX ?? 30),
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
 });
 
 const proposalCancelLimiter = rateLimit({
-  windowMs: 10 * 60 * 1000,
-  max: 10,
+  windowMs: Number(process.env.RATE_LIMIT_PROPOSAL_CANCEL_WINDOW_MS ?? 10 * 60 * 1000),
+  max: Number(process.env.RATE_LIMIT_PROPOSAL_CANCEL_MAX ?? 30),
   standardHeaders: true,
   legacyHeaders: false,
   message: { message: "Muitas requisições. Tente novamente em alguns instantes." },
@@ -95,20 +135,20 @@ const proposalCancelLimiter = rateLimit({
 
 const distributedPublicGetLimiter = distributedRateLimit({
   scope: 'public-proposal-get',
-  limit: 60,
-  windowMs: 10 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_GET_MAX ?? 180),
+  windowMs: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_GET_WINDOW_MS ?? 10 * 60 * 1000),
 });
 
 const distributedPublicSignLimiter = distributedRateLimit({
   scope: 'public-proposal-sign',
-  limit: 5,
-  windowMs: 10 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_SIGN_MAX ?? 30),
+  windowMs: Number(process.env.RATE_LIMIT_PUBLIC_PROPOSAL_SIGN_WINDOW_MS ?? 10 * 60 * 1000),
 });
 
 const distributedCancelLimiter = distributedRateLimit({
   scope: 'proposal-cancel',
-  limit: 10,
-  windowMs: 10 * 60 * 1000,
+  limit: Number(process.env.RATE_LIMIT_PROPOSAL_CANCEL_MAX ?? 30),
+  windowMs: Number(process.env.RATE_LIMIT_PROPOSAL_CANCEL_WINDOW_MS ?? 10 * 60 * 1000),
   key: (req) => `${req.ip}:${req.params.id ?? ''}`,
 });
 
@@ -140,15 +180,20 @@ const shareLinkSchema = z.object({
 });
 
 const signContractSchema = z.object({
-  signerName: z.string().trim().min(2).max(140),
-  signerDocument: z.string().trim().min(5).max(40),
+  signerName: z
+    .string()
+    .trim()
+    .transform(collapseWhitespace)
+    .refine((value) => value.length >= 2 && value.length <= 140, "Nome do assinante inválido.")
+    .refine(isSafeSignerName, "Nome do assinante inválido."),
+  signerDocument: cpfCnpjSchema("Documento do assinante invalido."),
   signatureDataUrl: z.string().trim().min(30).max(2_500_000),
 });
 
 const markPaidSchema = z.object({
   note: z.string().trim().max(500).optional(),
   payerName: z.string().trim().max(140).optional(),
-  payerDocument: z.string().trim().max(40).optional(),
+  payerDocument: optionalCpfCnpjSchema("Documento do pagador invalido."),
 });
 
 /**
@@ -156,6 +201,40 @@ const markPaidSchema = z.object({
  * Rotas públicas (SEM auth)
  * =============================
  */
+
+router.get(
+  "/public/:token/preview-document",
+  publicProposalGetLimiter,
+  distributedPublicGetLimiter,
+  async (req: Request, res: Response) => {
+    setPublicNoCache(res);
+
+    const token = normalizeAndValidatePublicToken(req.params.token);
+    if (!token) return res.status(400).json({ message: "Token inválido." });
+
+    const tokenHash = hashSha256(token);
+    const knownStateHash = normalizePreviewStateTag(req.header("if-none-match"));
+    const result = await renderOfficialPublicContractPreviewByTokenHash(tokenHash, knownStateHash);
+
+    if (!result) {
+      return res.status(404).json({ message: "Preview público não encontrado ou expirado." });
+    }
+
+    const stateHash = (result.rendered as any).stateHash ?? null;
+    if (!stateHash) {
+      return res.status(500).json({ message: "Preview sem hash de estado." });
+    }
+
+    setPublicPreviewDocumentHeaders(res, stateHash);
+
+    if ((result.rendered as any).notModified) {
+      return res.status(304).end();
+    }
+
+    res.setHeader("Content-Type", "text/html; charset=utf-8");
+    return res.send(result.rendered.html ?? "");
+  }
+);
 
 // ── GET /public/:token ────────────────────────────────────────────────────────
 
@@ -205,6 +284,9 @@ router.get(
       contract.shareTokenExpiresAt &&
       contract.shareTokenExpiresAt.getTime() >= Date.now()
     ) {
+      const rendered = await contractRenderService.renderContract(contract.id, contract.userId, undefined, {
+        publicPreview: true,
+      });
       const freelancer = await storage.getUserByIdForPix(contract.userId);
       return res.json({
         id: contract.id,
@@ -217,6 +299,9 @@ router.get(
         pixKey: freelancer?.pixKey ?? null,
         pixKeyType: freelancer?.pixKeyType ?? null,
         contract: contract.contract,
+        previewHtml: rendered?.html ?? undefined,
+        previewDocumentUrl: `/api/proposals/public/${token}/preview-document`,
+        previewExpiresAt: (rendered as any)?.previewExpiresAt ?? null,
       });
     }
 
@@ -330,7 +415,7 @@ router.post(
 
       const now = new Date();
 
-      await db
+      const [signedContract] = await db
         .update(contracts)
         .set({
           signedAt: now,
@@ -338,6 +423,7 @@ router.post(
           signerDocument,
           paymentReleasedAt: now,
           lifecycleStatus: "ACCEPTED",
+          status: "finalized",
           signatureCiphertext: encrypted.ciphertext.toString("base64"),
           signatureIv: encrypted.iv.toString("base64"),
           signatureAuthTag: encrypted.authTag.toString("base64"),
@@ -348,12 +434,20 @@ router.post(
             eq((contracts as any).shareTokenHash, tokenHash),
             sql`${(contracts as any).signedAt} is null`
           )
-        );
+        )
+        .returning({
+          id: contracts.id,
+          signedAt: contracts.signedAt,
+        });
+
+      if (!signedContract) {
+        return res.status(409).json({ message: "Não foi possível concluir a assinatura." });
+      }
 
       return res.status(201).json({
         ok: true,
-        proposalId: contract.id,
-        signedAt: now,
+        proposalId: signedContract.id,
+        signedAt: signedContract.signedAt ?? now,
       });
     }
 
@@ -389,6 +483,7 @@ router.post("/:id/share-link", async (req: AuthenticatedRequest, res: Response) 
   const expiresAt = new Date(Date.now() + parsedBody.data.expiresInHours * 60 * 60 * 1000);
 
   await storage.setProposalShareToken(userId, parsedId.data, tokenHash, expiresAt);
+  setPublicNoCache(res);
 
   return res.status(201).json({
     shareToken: rawToken,
@@ -565,11 +660,41 @@ router.post("/:id/payment-link", async (req: AuthenticatedRequest, res: Response
     return res.json({ paymentUrl: existingPayment.paymentUrl });
   }
 
-  const freelancerAccessToken = await getValidFreelancerAccessToken(userId);
-
   const publicHash = proposal.publicHash ?? crypto.randomBytes(18).toString("hex");
   if (!proposal.publicHash) {
     await storage.ensureProposalPublicHash(userId, proposal.id, publicHash);
+  }
+
+  try {
+    const result = await createOwnerProposalCheckoutProPayment({
+      userId,
+      proposalId: proposal.id,
+      notificationUrl: `${getBaseUrlFromRequest(req)}/api/webhooks/mercadopago`,
+      frontendPublicPath: `/p/${publicHash}`,
+      requestId: String((req as any).requestId ?? req.header("x-request-id") ?? ""),
+      ipAddress: req.ip,
+      userAgent: safeUserAgent(req),
+    });
+
+    setPublicNoCache(res);
+    return res.status(201).json({
+      paymentUrl: result.checkoutUrl,
+      checkoutIntentId: result.checkoutIntentId,
+      preferenceId: result.preferenceId,
+      idempotencyKey: result.idempotencyKey,
+    });
+  } catch (error) {
+    if (error instanceof PaymentSecurityError) {
+      return res.status(error.status).json({ message: error.message, code: error.code });
+    }
+
+    return res.status(500).json({ message: "Falha ao gerar link de pagamento." });
+  }
+
+  const freelancerAccessToken = "";
+  const __unusedPublicHash = proposal.publicHash ?? crypto.randomBytes(18).toString("hex");
+  if (!proposal.publicHash) {
+    await storage.ensureProposalPublicHash(proposal.userId, proposal.id, __unusedPublicHash);
   }
 
   const baseUrl = getBaseUrlFromRequest(req);
@@ -582,10 +707,10 @@ router.post("/:id/payment-link", async (req: AuthenticatedRequest, res: Response
     amountCents,
     currency: "BRL",
     notificationUrl,
-    frontendPublicPath: `/p/${publicHash}`,
+    frontendPublicPath: `/p/${__unusedPublicHash}`,
   });
 
-  const paymentUrl = preference.init_point || preference.sandbox_init_point;
+  const paymentUrl = resolveMercadoPagoCheckoutUrl(preference, freelancerAccessToken);
   if (!paymentUrl) {
     return res.status(502).json({ message: "Mercado Pago não retornou URL de pagamento." });
   }
@@ -595,10 +720,11 @@ router.post("/:id/payment-link", async (req: AuthenticatedRequest, res: Response
     status: "PENDING",
     externalPreferenceId: preference.id ?? null,
     externalPaymentId: null,
-    paymentUrl,
+    paymentUrl: paymentUrl!,
     amountCents,
   });
 
+  setPublicNoCache(res);
   return res.status(201).json({ paymentUrl });
 });
 

@@ -3,13 +3,35 @@ import { z } from "zod";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
 import { storage } from "../storage.js";
 import { requireStepUp } from "../middleware/step-up.js";
+import { normalizeCnpj, normalizeCpf, isValidCnpj, isValidCpf } from "../lib/brDocument.js";
 
 const router = Router();
 
-const pixSchema = z.object({
-  pixKey: z.string().trim().min(3).max(200),
-  pixKeyType: z.enum(["cpf", "cnpj", "email", "phone", "random"]),
-});
+const pixSchema = z
+  .object({
+    pixKey: z.string().trim().min(3).max(200),
+    pixKeyType: z.enum(["cpf", "cnpj", "email", "phone", "random"]),
+  })
+  .superRefine((data, ctx) => {
+    if (data.pixKeyType === "cpf" && !isValidCpf(data.pixKey)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pixKey"], message: "CPF invalido." });
+    }
+
+    if (data.pixKeyType === "cnpj" && !isValidCnpj(data.pixKey)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["pixKey"], message: "CNPJ invalido." });
+    }
+  })
+  .transform((data) => {
+    if (data.pixKeyType === "cpf") {
+      return { ...data, pixKey: normalizeCpf(data.pixKey) ?? data.pixKey };
+    }
+
+    if (data.pixKeyType === "cnpj") {
+      return { ...data, pixKey: normalizeCnpj(data.pixKey) ?? data.pixKey };
+    }
+
+    return data;
+  });
 
 router.get("/pix-key", authenticateOrMvp, async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
