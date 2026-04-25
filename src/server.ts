@@ -50,7 +50,7 @@ if (mercadoPagoConfigured && !process.env.TOKENS_ENCRYPTION_KEY) {
   process.exit(1);
 }
 
-const port = Number(process.env.PORT ?? 3001);
+const PORT = Number(process.env.PORT) || 3001;
 let server: ReturnType<typeof app.listen> | null = null;
 
 async function bootstrap() {
@@ -70,8 +70,8 @@ async function bootstrap() {
     console.warn('[boot] Postgres indisponível no startup. API iniciará em modo degradado (fail-open em rate limit distribuído).');
   }
 
-  server = app.listen(port, '0.0.0.0', () => {
-    console.log(`🚀 Fechou! backend rodando em http://localhost:${port}`);
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`🚀 rodando na porta ${PORT}`);
   });
 }
 

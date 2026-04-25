@@ -170,7 +170,15 @@ app.use(
 );
 app.use('/api', apiRateLimiter);
 
+app.get('/', (_req, res) => {
+  res.json({ ok: true, service: 'fechou-backend' });
+});
+
 app.get('/health', (_req, res) => {
+  res.json({ ok: true, service: 'fechou-backend' });
+});
+
+app.get('/healthz', (_req, res) => {
   res.json({ ok: true, service: 'fechou-backend' });
 });
 
