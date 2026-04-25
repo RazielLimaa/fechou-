@@ -77,9 +77,7 @@ app.use(
 const corsOptions: CorsOptions = {
   origin(origin, cb) {
     if (!origin) {
-      return isProduction
-        ? cb(new Error('CORS: origin ausente bloqueado em produção.'))
-        : cb(null, true);
+      return cb(null, true);
     }
 
     if (isTrustedOriginAllowed(origin, allowedOrigins)) {

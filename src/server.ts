@@ -11,12 +11,6 @@ const REQUIRED_ENV = [
   'SIGNATURES_MASTER_KEY',
 ] as const;
 
-const REQUIRED_IN_PRODUCTION = [
-  'TOKENS_ENCRYPTION_KEY',
-  'MERCADO_PAGO_WEBHOOK_SECRET',
-  'MP_WEBHOOK_SECRET',
-] as const;
-
 const PORT = Number(process.env.PORT ?? 10000);
 let server: Server | null = null;
 let closeDatabasePool: (() => Promise<void>) | null = null;
@@ -27,15 +21,6 @@ function validateEnvironment() {
     if (!process.env[key]) {
       console.error(`Required environment variable is missing: ${key}`);
       process.exit(1);
-    }
-  }
-
-  if (process.env.NODE_ENV === 'production') {
-    for (const key of REQUIRED_IN_PRODUCTION) {
-      if (!process.env[key]) {
-        console.error(`Required production environment variable is missing: ${key}`);
-        process.exit(1);
-      }
     }
   }
 
@@ -51,8 +36,15 @@ function validateEnvironment() {
   );
 
   if (mercadoPagoConfigured && !process.env.TOKENS_ENCRYPTION_KEY) {
-    console.error('TOKENS_ENCRYPTION_KEY is required when Mercado Pago integrations are enabled.');
-    process.exit(1);
+    console.warn('[boot] TOKENS_ENCRYPTION_KEY is missing; Mercado Pago OAuth token storage will fail until it is configured.');
+  }
+
+  if (
+    process.env.NODE_ENV === 'production' &&
+    !process.env.MERCADO_PAGO_WEBHOOK_SECRET &&
+    !process.env.MP_WEBHOOK_SECRET
+  ) {
+    console.warn('[boot] Mercado Pago webhook secret is missing; webhook requests will be rejected until it is configured.');
   }
 }
 
