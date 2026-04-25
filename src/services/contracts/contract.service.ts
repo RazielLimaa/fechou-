@@ -1,6 +1,8 @@
 import { and, asc, eq } from 'drizzle-orm';
 import { db } from '../../db/index.js';
 import { clauses, contractClauses, contracts } from '../../db/schema.js';
+import { clauseService } from './clause.service.js';
+import { buildDefaultContractLayout, mergeContractLayoutConfig } from './contract-layout.js';
 import { professionService } from './profession.service.js';
 
 interface CreateContractInput {
@@ -12,6 +14,7 @@ interface CreateContractInput {
   contractValue: string;
   paymentMethod: string;
   serviceScope: string;
+  autoApplySuggestedClauses?: boolean;
 }
 
 function mapStatus(s: string): string {
@@ -65,30 +68,35 @@ export class ContractService {
   // ─── createContract ────────────────────────────────────────────────────────
 
   async createContract(input: CreateContractInput) {
+    await clauseService.ensureCatalogSynced();
+    const { autoApplySuggestedClauses, ...contractInput } = input;
+
     const [created] = await db
       .insert(contracts)
       .values({
-        ...input,
+        ...contractInput,
         status:      'draft',
-        layoutConfig: {},
+        layoutConfig: buildDefaultContractLayout(contractInput),
         updatedAt:   new Date(),
       })
       .returning();
 
-    const suggested = await professionService.suggestClausesForProfession(input.profession);
-
-    await Promise.all(
-      suggested.map((clause, index) =>
-        db.insert(contractClauses).values({
-          contractId: created.id,
-          clauseId:   clause.id,
-          orderIndex: index,
-        })
-      )
-    );
+    const suggested = await professionService.suggestClausesForProfession(input.profession, input.contractType);
+    if (autoApplySuggestedClauses) {
+      await Promise.all(
+        suggested.map((clause, index) =>
+          db.insert(contractClauses).values({
+            contractId: created.id,
+            clauseId:   clause.id,
+            orderIndex: index,
+          })
+        )
+      );
+    }
 
     return {
       contractId:       created.id,
+      autoAppliedClauses: Boolean(autoApplySuggestedClauses),
       suggestedClauses: suggested.map((item) => ({ id: item.id, title: item.title })),
     };
   }
@@ -96,27 +104,43 @@ export class ContractService {
   // ─── getContract ───────────────────────────────────────────────────────────
 
   async getContract(contractId: number, userId: number) {
-    const [contract] = await db
-      .select()
-      .from(contracts)
-      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)));
+    const [contractRows, associatedClauses] = await Promise.all([
+      db
+        .select()
+        .from(contracts)
+        .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)))
+        .limit(1),
+      db
+        .select({
+          id: contractClauses.id,
+          clauseId: contractClauses.clauseId,
+          title: clauses.title,
+          content: clauses.content,
+          category: clauses.category,
+          customContent: contractClauses.customContent,
+          orderIndex: contractClauses.orderIndex,
+        })
+        .from(contractClauses)
+        .innerJoin(clauses, eq(clauses.id, contractClauses.clauseId))
+        .innerJoin(contracts, eq(contracts.id, contractClauses.contractId))
+        .where(and(eq(contractClauses.contractId, contractId), eq(contracts.userId, userId)))
+        .orderBy(asc(contractClauses.orderIndex)),
+    ]);
 
+    const contract = contractRows[0];
     if (!contract) return null;
 
-    const associatedClauses = await db
-      .select({
-        id:           contractClauses.id,
-        clauseId:     contractClauses.clauseId,
-        title:        clauses.title,
-        content:      clauses.content,
-        category:     clauses.category,
-        customContent:contractClauses.customContent,
-        orderIndex:   contractClauses.orderIndex,
-      })
-      .from(contractClauses)
-      .innerJoin(clauses, eq(clauses.id, contractClauses.clauseId))
-      .where(eq(contractClauses.contractId, contractId))
-      .orderBy(asc(contractClauses.orderIndex));
+    const suggestedClauses = await professionService.suggestClausesForProfession(contract.profession, contract.contractType);
+    const layout = mergeContractLayoutConfig(
+      buildDefaultContractLayout({
+        clientName: contract.clientName,
+        contractType: contract.contractType,
+        contractValue: String(contract.contractValue),
+        paymentMethod: contract.paymentMethod,
+        serviceScope: contract.serviceScope,
+      }),
+      (contract.layoutConfig ?? {}) as Record<string, unknown>
+    );
 
     return {
       ...contract,
@@ -125,7 +149,8 @@ export class ContractService {
       signedAt:        (contract as any).signedAt        ?? null,
       signed:          Boolean((contract as any).signedAt),
       clauses:         associatedClauses,
-      layout:          contract.layoutConfig,
+      layout:          layout,
+      suggestedClauses: suggestedClauses.map((item) => ({ id: item.id, title: item.title })),
     };
   }
 
@@ -145,11 +170,17 @@ export class ContractService {
       id:          contract.id,
       userId:      contract.userId,
       title:       `${c.contractType ?? 'Contrato'} — ${contract.clientName}`,
+      contractType: c.contractType ?? 'Contrato',
       clientName:  contract.clientName,
       description: c.serviceScope ?? '',
+      serviceScope: c.serviceScope ?? '',
       value:       c.contractValue ?? '0',
+      contractValue: c.contractValue ?? '0',
       status:      mapStatus(c.status ?? 'draft'),
       shareTokenExpiresAt: c.shareTokenExpiresAt ? new Date(c.shareTokenExpiresAt) : null,
+      lifecycleStatus: c.lifecycleStatus ?? null,
+      paymentReleasedAt: c.paymentReleasedAt ?? null,
+      paymentConfirmedAt: c.paymentConfirmedAt ?? null,
       pixKey:      null as string | null,
       pixKeyType:  null as string | null,
       contract: {
@@ -167,11 +198,24 @@ export class ContractService {
   async updateContractLayout(
     contractId: number,
     userId: number,
-    layoutConfig: Record<string, unknown>
+    layoutConfig: Record<string, unknown>,
+    options?: { replace?: boolean }
   ) {
+    const [current] = await db
+      .select({ layoutConfig: contracts.layoutConfig })
+      .from(contracts)
+      .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)))
+      .limit(1);
+
+    if (!current) return null;
+
+    const nextLayout = options?.replace
+      ? layoutConfig
+      : mergeContractLayoutConfig((current.layoutConfig ?? {}) as Record<string, unknown>, layoutConfig);
+
     const [updated] = await db
       .update(contracts)
-      .set({ layoutConfig, updatedAt: new Date() })
+      .set({ layoutConfig: nextLayout, updatedAt: new Date() })
       .where(and(eq(contracts.id, contractId), eq(contracts.userId, userId)))
       .returning();
 

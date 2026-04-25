@@ -1,6 +1,7 @@
 import crypto from 'node:crypto';
 import type { NextFunction, Request, Response } from 'express';
 import { checkDistributedRateLimit, cleanupSecurityStore } from '../services/securityStore.js';
+import { isTrustedOriginAllowed } from '../lib/httpSecurity.js';
 
 function getClientIp(req: Request) {
   return String(req.ip ?? req.headers['x-forwarded-for'] ?? 'unknown').split(',')[0].trim();
@@ -77,10 +78,20 @@ export function csrfProtection(options: { allowedOrigins: string[]; exemptPaths?
       return res.status(403).json({ message: 'CSRF inválido ou ausente.' });
     }
 
-    if (process.env.NODE_ENV === 'production') {
-      const origin = String(req.header('origin') ?? '').trim();
-      if (origin && !options.allowedOrigins.includes(origin)) {
-        return res.status(403).json({ message: 'Origem não permitida.' });
+    const origin = String(req.header('origin') ?? '').trim();
+    const referer = String(req.header('referer') ?? '').trim();
+    if (origin && !isTrustedOriginAllowed(origin, options.allowedOrigins)) {
+      return res.status(403).json({ message: 'Origem não permitida.' });
+    }
+
+    if (!origin && referer) {
+      try {
+        const refererOrigin = new URL(referer).origin;
+        if (!isTrustedOriginAllowed(refererOrigin, options.allowedOrigins)) {
+          return res.status(403).json({ message: 'Origem não permitida.' });
+        }
+      } catch {
+        return res.status(403).json({ message: 'Referer inválido.' });
       }
     }
 

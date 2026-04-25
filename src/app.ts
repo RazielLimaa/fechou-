@@ -12,7 +12,7 @@ import metricsRoutes from './routes/metrics.routes.js';
 import paymentsRoutes from './routes/payments.routes.js';
 import mercadoPagoRoutes from './routes/mercadopago.routes.js';
 import webhooksRoutes from './routes/webhooks.routes.js';
-import { apiRateLimiter, sanitizeRequestBody, contractCreationRateLimiter } from './middleware/security.js';
+import { apiRateLimiter, sanitizeRequestBody } from './middleware/security.js';
 import userRoutes from './routes/user.routes.js';
 import copilotRoutes from './routes/copilot.routes.js';
 import contractsRoutes from './routes/contracts.routes.js';
@@ -21,6 +21,7 @@ import profileRoutes from './routes/profile.routes.js';
 import scoreRoutes from './routes/score.routes.js';
 import ratingRoutes from './routes/rating.routes.js';
 import { csrfProtection } from './middleware/distributed-security.js';
+import { isTrustedOriginAllowed } from './lib/httpSecurity.js';
 
 const app = express();
 
@@ -61,11 +62,11 @@ app.use(
       },
     },
     referrerPolicy: {
-      policy: 'no-referrer',
+      policy: 'strict-origin-when-cross-origin',
     },
     hsts: isProduction
       ? {
-          maxAge: 31536000,
+          maxAge: 63072000,
           includeSubDomains: true,
           preload: true,
         }
@@ -81,7 +82,7 @@ const corsOptions: CorsOptions = {
         : cb(null, true);
     }
 
-    if (allowedOrigins.includes(origin)) {
+    if (isTrustedOriginAllowed(origin, allowedOrigins)) {
       return cb(null, true);
     }
 
@@ -98,9 +99,16 @@ const corsOptions: CorsOptions = {
     'x-step-up-token',
     'X-CSRF-Token',
     'x-csrf-token',
-    'X-Step-Up-Token',
-    'x-step-up-token',
+    'X-Idempotency-Key',
     'idempotency-key',
+    'X-Request-Id',
+    'x-request-id',
+    'X-Fechou-Locale',
+    'x-fechou-locale',
+    'X-App-Locale',
+    'x-app-locale',
+    'X-Locale',
+    'x-locale',
     'Accept',
     'Origin',
     'pix-key',
@@ -128,10 +136,15 @@ app.use((req, res, next) => {
 });
 
 app.use('/api/payments/webhook', express.raw({ type: 'application/json' }));
+app.use('/api/webhooks/mercadopago', express.raw({ type: 'application/json' }));
 
 app.use('/api/proposals/public', express.json({ limit: '4mb' }));
 app.use('/api/contracts/public', express.json({ limit: '4mb' }));
-app.use(express.json({ limit: '25mb' }));
+
+// Rotas públicas de contratos (review por share token) — sem autenticação
+app.use('/api/contracts/review', express.json({ limit: '4mb' }));
+
+app.use(express.json({ limit: '5mb' }));
 
 app.use(sanitizeRequestBody);
 app.use(
@@ -144,11 +157,14 @@ app.use(
       '/api/auth/google',
       '/api/auth/refresh',
       '/api/auth/logout',
+      '/api/auth/forgot-password',
+      '/api/auth/reset-password',
       '/api/webhooks/',
       '/api/payments/webhook',
       '/api/proposals/public/',
       '/api/payments/public/',
       '/api/mercadopago/callback',
+      '/api/contracts/review/',
     ],
   })
 );
@@ -188,7 +204,7 @@ app.use('/api/mercadopago', mercadoPagoRoutes);
 app.use('/api/webhooks', webhooksRoutes);
 app.use('/api/user', userRoutes);
 app.use('/api/copilot', copilotRoutes);
-app.use('/api/contracts', contractCreationRateLimiter, contractsRoutes);
+app.use('/api/contracts', contractsRoutes);
 app.use('/api/clauses', clausesRoutes);
 app.use('/api/profile', profileRoutes);
 app.use('/api/score', scoreRoutes);

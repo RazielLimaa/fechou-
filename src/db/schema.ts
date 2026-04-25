@@ -1,6 +1,7 @@
 import { relations } from "drizzle-orm";
 import {
   boolean,
+  index,
   integer,
   jsonb,
   numeric,
@@ -10,6 +11,7 @@ import {
   smallint,
   text,
   timestamp,
+  uniqueIndex,
   uuid,
   varchar,
 } from "drizzle-orm/pg-core";
@@ -29,6 +31,39 @@ export const proposalPaymentStatusEnum = pgEnum("proposal_payment_status", [
   "PENDING",
   "CONFIRMED",
   "FAILED",
+]);
+export const checkoutIntentStatusEnum = pgEnum("checkout_intent_status", [
+  "requires_payment_method",
+  "payment_pending",
+  "processing",
+  "paid",
+  "failed",
+  "expired",
+  "cancelled",
+]);
+export const checkoutIntentFlowEnum = pgEnum("checkout_intent_flow", [
+  "checkout_pro",
+  "checkout_bricks",
+  "transparent_order",
+  "payments_api",
+]);
+export const checkoutIntentResourceTypeEnum = pgEnum("checkout_intent_resource_type", [
+  "proposal",
+  "contract",
+]);
+export const securePaymentStatusEnum = pgEnum("secure_payment_status", [
+  "pending",
+  "approved",
+  "rejected",
+  "cancelled",
+  "refunded",
+]);
+export const webhookEventStatusEnum = pgEnum("webhook_event_status", [
+  "received",
+  "queued",
+  "processing",
+  "processed",
+  "failed",
 ]);
 export const mercadoPagoAuthMethodEnum = pgEnum("mercado_pago_auth_method", ["oauth", "api_key"]);
 export const contractStatusEnum = pgEnum("contract_status", ["draft", "editing", "finalized"]);
@@ -166,6 +201,166 @@ export const payments = pgTable("payments", {
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 });
+
+export const checkoutIntents = pgTable(
+  "checkout_intents",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    userId: integer("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "cascade" }),
+    resourceType: checkoutIntentResourceTypeEnum("resource_type").notNull(),
+    resourceId: integer("resource_id").notNull(),
+    proposalId: integer("proposal_id").references(() => proposals.id, { onDelete: "set null" }),
+    contractId: integer("contract_id"),
+    accessScope: varchar("access_scope", { length: 32 }).notNull().default("public_share"),
+    flow: checkoutIntentFlowEnum("flow").notNull().default("checkout_pro"),
+    provider: providerEnum("provider").notNull().default("mercadopago"),
+    status: checkoutIntentStatusEnum("status").notNull().default("requires_payment_method"),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    currency: varchar("currency", { length: 10 }).notNull().default("BRL"),
+    description: varchar("description", { length: 255 }).notNull(),
+    externalReference: varchar("external_reference", { length: 180 }).notNull(),
+    shareTokenHash: varchar("share_token_hash", { length: 128 }),
+    correlationId: varchar("correlation_id", { length: 120 }).notNull(),
+    providerReferenceId: varchar("provider_reference_id", { length: 140 }),
+    lastProviderPaymentId: varchar("last_provider_payment_id", { length: 140 }),
+    metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default({}),
+    lastReconciledAt: timestamp("last_reconciled_at"),
+    paidAt: timestamp("paid_at"),
+    expiresAt: timestamp("expires_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    externalReferenceIdx: uniqueIndex("checkout_intents_external_reference_unique").on(table.externalReference),
+    resourceStatusIdx: index("checkout_intents_resource_status_idx").on(
+      table.userId,
+      table.resourceType,
+      table.resourceId,
+      table.status,
+    ),
+    shareTokenHashIdx: index("checkout_intents_share_token_hash_idx").on(table.shareTokenHash),
+    correlationIdIdx: index("checkout_intents_correlation_id_idx").on(table.correlationId),
+  }),
+);
+
+export const paymentTransactions = pgTable(
+  "payment_transactions",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    checkoutIntentId: uuid("checkout_intent_id")
+      .notNull()
+      .references(() => checkoutIntents.id, { onDelete: "cascade" }),
+    provider: providerEnum("provider").notNull().default("mercadopago"),
+    providerPaymentId: varchar("provider_payment_id", { length: 140 }),
+    providerPreferenceId: varchar("provider_preference_id", { length: 140 }),
+    providerOrderId: varchar("provider_order_id", { length: 140 }),
+    idempotencyKey: varchar("idempotency_key", { length: 120 }).notNull(),
+    status: securePaymentStatusEnum("status").notNull().default("pending"),
+    statusDetail: varchar("status_detail", { length: 180 }),
+    amount: numeric("amount", { precision: 12, scale: 2 }).notNull(),
+    currency: varchar("currency", { length: 10 }).notNull().default("BRL"),
+    externalReference: varchar("external_reference", { length: 180 }),
+    requestId: varchar("request_id", { length: 180 }),
+    providerPayload: jsonb("provider_payload").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    idempotencyKeyIdx: uniqueIndex("payment_transactions_idempotency_key_unique").on(table.idempotencyKey),
+    providerPaymentIdx: uniqueIndex("payment_transactions_provider_payment_unique").on(
+      table.provider,
+      table.providerPaymentId,
+    ),
+    providerPreferenceIdx: index("payment_transactions_provider_preference_idx").on(table.providerPreferenceId),
+    checkoutIntentStatusIdx: index("payment_transactions_checkout_intent_status_idx").on(
+      table.checkoutIntentId,
+      table.status,
+    ),
+  }),
+);
+
+export const webhookEvents = pgTable(
+  "webhook_events",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    eventKey: varchar("event_key", { length: 200 }).notNull(),
+    provider: providerEnum("provider").notNull().default("mercadopago"),
+    topic: varchar("topic", { length: 80 }).notNull(),
+    action: varchar("action", { length: 120 }),
+    dataId: varchar("data_id", { length: 180 }).notNull(),
+    requestId: varchar("request_id", { length: 180 }),
+    ts: varchar("ts", { length: 32 }).notNull(),
+    signatureValid: boolean("signature_valid").notNull().default(false),
+    payloadJson: jsonb("payload_json").$type<Record<string, unknown>>().notNull().default({}),
+    headersJson: jsonb("headers_json").$type<Record<string, unknown>>().notNull().default({}),
+    status: webhookEventStatusEnum("status").notNull().default("received"),
+    processingAttempts: integer("processing_attempts").notNull().default(0),
+    processingStartedAt: timestamp("processing_started_at"),
+    processedAt: timestamp("processed_at"),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    updatedAt: timestamp("updated_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    eventKeyIdx: uniqueIndex("webhook_events_event_key_unique").on(table.eventKey),
+    providerTopicDataIdx: index("webhook_events_provider_topic_data_idx").on(
+      table.provider,
+      table.topic,
+      table.dataId,
+    ),
+    statusCreatedIdx: index("webhook_events_status_created_idx").on(table.status, table.createdAt),
+  }),
+);
+
+export const auditLogs = pgTable(
+  "audit_logs",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    actorId: integer("actor_id").references(() => users.id, { onDelete: "set null" }),
+    tenantId: integer("tenant_id"),
+    eventType: varchar("event_type", { length: 120 }).notNull(),
+    resourceType: varchar("resource_type", { length: 80 }).notNull(),
+    resourceId: varchar("resource_id", { length: 120 }).notNull(),
+    idempotencyKey: varchar("idempotency_key", { length: 120 }),
+    requestId: varchar("request_id", { length: 180 }),
+    correlationId: varchar("correlation_id", { length: 120 }),
+    ipAddress: varchar("ip_address", { length: 80 }),
+    userAgent: varchar("user_agent", { length: 300 }),
+    metadataJson: jsonb("metadata_json").$type<Record<string, unknown>>().notNull().default({}),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    resourceIdx: index("audit_logs_resource_idx").on(table.resourceType, table.resourceId, table.createdAt),
+    requestIdx: index("audit_logs_request_idx").on(table.requestId),
+    correlationIdx: index("audit_logs_correlation_idx").on(table.correlationId),
+  }),
+);
+
+export const securityIdempotencyKeys = pgTable(
+  "security_idempotency_keys",
+  {
+    idempotencyKey: varchar("idempotency_key", { length: 120 }).primaryKey(),
+    scope: varchar("scope", { length: 80 }).notNull(),
+    userId: integer("user_id").references(() => users.id, { onDelete: "set null" }),
+    requestHash: varchar("request_hash", { length: 128 }).notNull(),
+    resourceType: varchar("resource_type", { length: 80 }),
+    resourceId: varchar("resource_id", { length: 120 }),
+    responseJson: jsonb("response_json").$type<Record<string, unknown> | null>().default(null),
+    lockExpiresAt: timestamp("lock_expires_at"),
+    expiresAt: timestamp("expires_at").notNull(),
+    createdAt: timestamp("created_at").defaultNow().notNull(),
+    lastSeenAt: timestamp("last_seen_at").defaultNow().notNull(),
+  },
+  (table) => ({
+    scopeResourceIdx: index("security_idempotency_scope_resource_idx").on(
+      table.scope,
+      table.resourceType,
+      table.resourceId,
+    ),
+    expiresAtIdx: index("security_idempotency_expires_at_idx").on(table.expiresAt),
+  }),
+);
 
 export const contractTemplates = pgTable("contract_templates", {
   id: serial("id").primaryKey(),

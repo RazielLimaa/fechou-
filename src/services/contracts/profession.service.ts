@@ -1,30 +1,23 @@
-import { inArray } from 'drizzle-orm';
-import { db } from '../../db/index.js';
-import { clauses } from '../../db/schema.js';
+import { inArray } from "drizzle-orm";
+import { db } from "../../db/index.js";
+import { clauses } from "../../db/schema.js";
+import { getProfessionSuggestedClauseSlugs, LEGAL_CLAUSE_CATALOG } from "./legal-blueprint.js";
+import { clauseService } from "./clause.service.js";
 
-const PROFESSION_CLAUSE_MAP: Record<string, string[]> = {
-  WEB: ['propriedade intelectual', 'entrega de projeto', 'licenciamento de software', 'suporte técnico'],
-  SOFTWARE: ['propriedade intelectual', 'entrega de projeto', 'licenciamento de software', 'suporte técnico'],
-  MOBILE: ['propriedade intelectual', 'entrega de projeto', 'licenciamento de software', 'suporte técnico'],
-  DESIGN: ['direitos autorais', 'entrega de arquivos', 'limite de revisões'],
-  BRANDING: ['direitos autorais', 'entrega de arquivos', 'limite de revisões'],
-  MARKETING: ['estratégia de marketing', 'resultados não garantidos'],
-  FOTOGRAFIA: ['direito de imagem', 'cancelamento de evento'],
-  EVENTOS: ['direito de imagem', 'cancelamento de evento'],
-  'ESTÉTICA': ['responsabilidade profissional', 'consentimento do cliente'],
-  'SAÚDE': ['responsabilidade profissional', 'consentimento do cliente'],
-  'EDUCAÇÃO': ['uso de material didático'],
-  'JURÍDICO': ['confidencialidade reforçada', 'limitação de responsabilidade']
-};
+const CLAUSE_ID_BY_SLUG = new Map(LEGAL_CLAUSE_CATALOG.map((item) => [item.slug, item.id]));
 
 export class ProfessionService {
-  async suggestClausesForProfession(profession: string) {
-    const key = profession.trim().toUpperCase();
-    const titles = PROFESSION_CLAUSE_MAP[key] ?? [];
+  async suggestClausesForProfession(profession: string, contractType?: string) {
+    await clauseService.ensureCatalogSynced();
 
-    if (titles.length === 0) return [];
+    const slugs = getProfessionSuggestedClauseSlugs(profession, contractType);
+    const ids = slugs
+      .map((slug) => CLAUSE_ID_BY_SLUG.get(slug))
+      .filter((item): item is string => Boolean(item));
 
-    return db.select().from(clauses).where(inArray(clauses.title, titles));
+    if (ids.length === 0) return [];
+
+    return db.select().from(clauses).where(inArray(clauses.id, ids as any));
   }
 }
 

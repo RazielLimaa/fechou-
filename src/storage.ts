@@ -379,6 +379,25 @@ export class Storage {
     return session;
   }
 
+  async findSubscriptionPaymentSessionByExternalReference(externalReference: string, userId?: number) {
+    const conditions = [
+      eq(paymentSessions.mode, "subscription"),
+      sql`${paymentSessions.metadata} ->> 'externalReference' = ${externalReference}`,
+    ];
+
+    if (userId !== undefined) {
+      conditions.push(eq(paymentSessions.userId, userId));
+    }
+
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(and(...conditions))
+      .orderBy(desc(paymentSessions.createdAt));
+
+    return session;
+  }
+
   async markMercadoPagoPayment(
     sessionId: number,
     mercadoPagoPaymentId: string,
@@ -403,6 +422,24 @@ export class Storage {
           eq(paymentSessions.userId, userId),
           eq(paymentSessions.mode, "payment"),
           eq(paymentSessions.status, "pending")
+        )
+      )
+      .orderBy(desc(paymentSessions.createdAt));
+
+    return session;
+  }
+
+  async findLatestPendingContractPaymentSession(contractId: number, userId: number) {
+    const [session] = await db
+      .select()
+      .from(paymentSessions)
+      .where(
+        and(
+          eq(paymentSessions.userId, userId),
+          eq(paymentSessions.mode, "payment"),
+          eq(paymentSessions.status, "pending"),
+          sql`${paymentSessions.metadata} ->> 'kind' = 'contract_payment_mercado_pago'`,
+          sql`${paymentSessions.metadata} ->> 'contractId' = ${String(contractId)}`
         )
       )
       .orderBy(desc(paymentSessions.createdAt));
@@ -557,6 +594,15 @@ export class Storage {
       .select()
       .from(mercadoPagoAccounts)
       .where(eq(mercadoPagoAccounts.userId, userId));
+
+    return account;
+  }
+
+  async getMercadoPagoAccountByMpUserId(mpUserId: string) {
+    const [account] = await db
+      .select()
+      .from(mercadoPagoAccounts)
+      .where(eq(mercadoPagoAccounts.mpUserId, mpUserId));
 
     return account;
   }

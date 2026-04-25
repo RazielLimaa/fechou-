@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import { z } from 'zod';
 import { authenticate, type AuthenticatedRequest } from '../middleware/auth.js';
+import { requirePlan } from '../middleware/requirePlan.js';
 import { storage } from '../storage.js';
 
 const router = Router();
@@ -460,6 +461,8 @@ router.get('/sales', async (req: AuthenticatedRequest, res) => {
   const metrics = await storage.getSalesMetrics(userId);
   return res.json(metrics);
 });
+
+router.use('/premium-dashboard', requirePlan("premium"));
 
 router.get('/premium-dashboard', async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;

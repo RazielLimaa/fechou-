@@ -49,6 +49,54 @@ export const loginAttempts = pgTable(
   })
 );
 
+// ── Tokens de redefinição de senha ───────────────────────────────────────────
+export const passwordResetTokens = pgTable(
+  "password_reset_tokens",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    tokenHash: varchar("token_hash", { length: 128 }).notNull().unique(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    requestedIp: varchar("requested_ip", { length: 80 }),
+    requestedUserAgent: text("requested_user_agent"),
+    usedIp: varchar("used_ip", { length: 80 }),
+    usedUserAgent: text("used_user_agent"),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdIdx: index("idx_prt_user_id").on(t.userId, t.createdAt),
+    tokenHashIdx: index("idx_prt_token_hash").on(t.tokenHash),
+    expiresAtIdx: index("idx_prt_expires_at").on(t.expiresAt),
+  })
+);
+
+export const passwordResetChallenges = pgTable(
+  "password_reset_challenges",
+  {
+    id: serial("id").primaryKey(),
+    userId: integer("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+    codeHash: varchar("code_hash", { length: 128 }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    requestedIp: varchar("requested_ip", { length: 80 }),
+    requestedUserAgent: text("requested_user_agent"),
+    verifiedIp: varchar("verified_ip", { length: 80 }),
+    verifiedUserAgent: text("verified_user_agent"),
+    attempts: integer("attempts").notNull().default(0),
+    maxAttempts: integer("max_attempts").notNull().default(5),
+    createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => ({
+    userIdIdx: index("idx_prc_user_id").on(t.userId, t.createdAt),
+    codeHashIdx: index("idx_prc_code_hash").on(t.codeHash),
+    expiresAtIdx: index("idx_prc_expires_at").on(t.expiresAt),
+  })
+);
+
 // ── Tipos inferidos ───────────────────────────────────────────────────────────
 export type RefreshToken  = typeof refreshTokens.$inferSelect;
 export type LoginAttempt  = typeof loginAttempts.$inferSelect;
+export type PasswordResetToken = typeof passwordResetTokens.$inferSelect;
+export type PasswordResetChallenge = typeof passwordResetChallenges.$inferSelect;

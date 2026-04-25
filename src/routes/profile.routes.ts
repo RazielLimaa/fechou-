@@ -10,11 +10,12 @@
 
 import { Router, type Request, type Response } from "express";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { authenticateOrMvp, type AuthenticatedRequest } from "../middleware/auth.js";
 import { db } from "../db/index.js";
 import { users, userProfiles, userScores } from "../db/schema.js";
 import { scoreService, ScoreService } from "../services/score.sevice.js";
+import { normalizeProfileAvatarInput } from "../lib/imageDataUrl.js";
 
 const router = Router();
 
@@ -33,7 +34,7 @@ const urlOrNull = z
 const updateProfileSchema = z.object({
   displayName:   z.string().trim().max(120).optional(),
   bio:           z.string().trim().max(500).optional(),
-  avatarUrl:     z.string().max(2_000_000).optional().nullable(),
+  avatarUrl:     z.string().max(8_000_000).optional().nullable(),
   profession:    z.string().trim().max(80).optional(),
   location:      z.string().trim().max(80).optional(),
   slug: z.string().trim().optional().transform(v => {
@@ -53,7 +54,13 @@ const updateProfileSchema = z.object({
 
 async function buildPublicProfile(userId: number) {
   const [user] = await db
-    .select({ id: users.id, name: users.name, email: users.email, createdAt: users.createdAt })
+    .select({
+      id: users.id,
+      name: users.name,
+      email: users.email,
+      createdAt: users.createdAt,
+      avatarUrl: sql<string | null>`avatar_url`,
+    })
     .from(users)
     .where(eq(users.id, userId));
 
@@ -72,7 +79,7 @@ async function buildPublicProfile(userId: number) {
     userId:      user.id,
     name:        profile?.displayName ?? user.name,
     bio:         profile?.bio ?? null,
-    avatarUrl:   profile?.avatarUrl ?? null,
+    avatarUrl:   profile?.avatarUrl ?? user.avatarUrl ?? null,
     profession:  profile?.profession ?? null,
     location:    profile?.location ?? null,
     slug:        profile?.slug ?? null,
@@ -141,6 +148,15 @@ router.patch("/me", authenticateOrMvp, async (req: AuthenticatedRequest, res: Re
   const data = parsed.data;
 
   try {
+    let normalizedAvatarUrl = data.avatarUrl;
+    try {
+      normalizedAvatarUrl = normalizeProfileAvatarInput(data.avatarUrl);
+    } catch (err: any) {
+      return res.status(422).json({
+        message: err?.message ?? "Avatar inválido.",
+      });
+    }
+
     if (data.slug) {
       const [existing] = await db
         .select({ userId: userProfiles.userId })
@@ -159,7 +175,7 @@ router.patch("/me", authenticateOrMvp, async (req: AuthenticatedRequest, res: Re
         userId,
         displayName:   data.displayName   ?? null,
         bio:           data.bio           ?? null,
-        avatarUrl:     data.avatarUrl     ?? null,
+        avatarUrl:     normalizedAvatarUrl ?? null,
         profession:    data.profession    ?? null,
         location:      data.location      ?? null,
         slug:          data.slug          ?? null,
@@ -176,7 +192,7 @@ router.patch("/me", authenticateOrMvp, async (req: AuthenticatedRequest, res: Re
         set: {
           ...(data.displayName   !== undefined && { displayName:   data.displayName   }),
           ...(data.bio           !== undefined && { bio:           data.bio           }),
-          ...(data.avatarUrl     !== undefined && { avatarUrl:     data.avatarUrl     }),
+          ...(data.avatarUrl     !== undefined && { avatarUrl:     normalizedAvatarUrl }),
           ...(data.profession    !== undefined && { profession:    data.profession    }),
           ...(data.location      !== undefined && { location:      data.location      }),
           ...(data.slug          !== undefined && { slug:          data.slug          }),
@@ -235,7 +251,7 @@ router.get("/public/:slugOrId", async (req: Request, res: Response) => {
     if (!profile) return res.status(404).json({ message: "Perfil não encontrado." });
 
     if (!profile.isPublic) {
-      return res.status(403).json({ message: "Este perfil é privado." });
+      return res.status(404).json({ message: "Perfil não encontrado." });
     }
 
     return res.json(profile);

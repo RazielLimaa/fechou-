@@ -18,6 +18,16 @@ const RICH_TEXT_FIELDS = new Set([
   'content',
 ]);
 
+const RAW_DATA_URL_FIELDS = new Set([
+  'avatarUrl',
+  'signatureDataUrl',
+]);
+
+const STRICT_VALIDATION_FIELDS = new Set([
+  'signerName',
+  'signerDocument',
+]);
+
 // ─────────────────────────────────────────────────────────────────────────────
 // HTML STRIP
 // ─────────────────────────────────────────────────────────────────────────────
@@ -43,6 +53,12 @@ function sanitizeObject(
 
   if (typeof value === 'string') {
     const trimmed = value.trim();
+    if (fieldName && RAW_DATA_URL_FIELDS.has(fieldName) && trimmed.startsWith('data:image/')) {
+      return trimmed;
+    }
+    if (fieldName && STRICT_VALIDATION_FIELDS.has(fieldName)) {
+      return trimmed;
+    }
     if (fieldName && RICH_TEXT_FIELDS.has(fieldName)) {
       return trimmed
         .replace(/javascript\s*:/gi, '')
@@ -82,13 +98,8 @@ export function sanitizeRequestBody(
   next: NextFunction
 ) {
   if (req.originalUrl.startsWith('/api/payments/webhook')) return next();
+  if (req.originalUrl.startsWith('/api/webhooks/mercadopago')) return next();
   if (Buffer.isBuffer(req.body)) return next();
-
-  // Rotas de assinatura pública enviam signatureDataUrl (data:image/png;base64,...)
-  // O sanitizer removeria o prefixo "data:" quebrando a validação — pula essas rotas
-  if (req.originalUrl.includes('/public/') && req.originalUrl.endsWith('/sign')) {
-    return next();
-  }
 
   if (req.body && typeof req.body === 'object') {
     req.body = sanitizeObject(req.body);
@@ -120,7 +131,7 @@ export function contractRenderHeaders(
 
 export const uploadRateLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_UPLOAD_MAX ?? 20),
+  max: Number(process.env.RATE_LIMIT_UPLOAD_MAX ?? 60),
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req: Request) => {
@@ -137,7 +148,7 @@ export const uploadRateLimiter = rateLimit({
 
 export const contractCreationRateLimiter = rateLimit({
   windowMs: 120 * 60 * 1000,
-  max: Number(process.env.RATE_LIMIT_CONTRACT_MAX),
+  max: Number(process.env.RATE_LIMIT_CONTRACT_MAX ?? 200),
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req: Request) => {
@@ -156,7 +167,7 @@ const WINDOW_MS = Number(process.env.RATE_LIMIT_WINDOW_MS ?? 15 * 60 * 1000);
 
 export const authRateLimiter = rateLimit({
   windowMs: WINDOW_MS,
-  max: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 50),
+  max: Number(process.env.RATE_LIMIT_AUTH_MAX ?? 150),
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => req.method === 'OPTIONS',
@@ -167,10 +178,21 @@ export const authRateLimiter = rateLimit({
 
 export const apiRateLimiter = rateLimit({
   windowMs: WINDOW_MS,
-  max: Number(process.env.RATE_LIMIT_API_MAX ?? 1200),
+  max: Number(process.env.RATE_LIMIT_API_MAX ?? 5000),
   standardHeaders: true,
   legacyHeaders: false,
-  skip: (req) => req.method === 'OPTIONS' || req.originalUrl.startsWith('/api/payments/webhook'),
+  skip: (req) => {
+    if (req.method === 'OPTIONS') return true;
+    if (req.originalUrl.startsWith('/api/payments/webhook')) return true;
+
+    // Em desenvolvimento, evita 429 ruidoso em bootstrap do frontend
+    // (csrf/me/login/google costumam ser chamados em sequência por HMR/retries).
+    if (process.env.NODE_ENV !== 'production' && req.originalUrl.startsWith('/api/auth/')) {
+      return true;
+    }
+
+    return false;
+  },
   message: {
     message: 'Muitas requisições. Tente novamente em instantes.',
   },
@@ -178,7 +200,7 @@ export const apiRateLimiter = rateLimit({
 
 export const sensitiveRateLimiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_SENSITIVE_WINDOW_MS ?? 10 * 60 * 1000),
-  max: Number(process.env.RATE_LIMIT_SENSITIVE_MAX ?? 150),
+  max: Number(process.env.RATE_LIMIT_SENSITIVE_MAX ?? 400),
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => req.method === 'OPTIONS',
@@ -189,7 +211,7 @@ export const sensitiveRateLimiter = rateLimit({
 
 export const webhookRateLimiter = rateLimit({
   windowMs: Number(process.env.RATE_LIMIT_WEBHOOK_WINDOW_MS ?? 60 * 1000),
-  max: Number(process.env.RATE_LIMIT_WEBHOOK_MAX ?? 120),
+  max: Number(process.env.RATE_LIMIT_WEBHOOK_MAX ?? 300),
   standardHeaders: true,
   legacyHeaders: false,
   message: {

@@ -1,6 +1,7 @@
 import 'dotenv/config';
 import app from './app.js';
 import { closeDatabasePool, testDatabaseConnectionWithRetry } from './db/index.js';
+import { startMercadoPagoWebhookWorker, stopMercadoPagoWebhookWorker } from './services/payments/mercadoPagoWebhookQueue.js';
 
 const REQUIRED_ENV = [
   'DATABASE_URL',
@@ -8,6 +9,7 @@ const REQUIRED_ENV = [
   'JWT_REFRESH_SECRET',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
+  'SIGNATURES_MASTER_KEY',
 ] as const;
 
 const REQUIRED_IN_PRODUCTION = [
@@ -37,6 +39,17 @@ if (process.env.JWT_SECRET!.length < 32) {
   process.exit(1);
 }
 
+const mercadoPagoConfigured = Boolean(
+  process.env.MP_CLIENT_ID ||
+  process.env.MP_ACCESS_TOKEN ||
+  process.env.MP_PLATFORM_ACCESS_TOKEN
+);
+
+if (mercadoPagoConfigured && !process.env.TOKENS_ENCRYPTION_KEY) {
+  console.error('❌ TOKENS_ENCRYPTION_KEY é obrigatória quando integrações do Mercado Pago estão habilitadas.');
+  process.exit(1);
+}
+
 const port = Number(process.env.PORT ?? 3001);
 let server: ReturnType<typeof app.listen> | null = null;
 
@@ -45,6 +58,7 @@ async function bootstrap() {
     maxAttempts: Number(process.env.DB_STARTUP_MAX_ATTEMPTS ?? 6),
     retryDelayMs: Number(process.env.DB_STARTUP_RETRY_MS ?? 2_000),
   });
+  startMercadoPagoWebhookWorker();
   const requireDbOnStartup = process.env.DB_REQUIRED_ON_STARTUP === 'true';
 
   if (!dbHealthy) {
@@ -71,6 +85,7 @@ async function shutdown(signal: string) {
   }
 
   await closeDatabasePool();
+  stopMercadoPagoWebhookWorker();
   process.exit(0);
 }
 
