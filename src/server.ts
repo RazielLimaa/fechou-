@@ -17,8 +17,7 @@ const REQUIRED_IN_PRODUCTION = [
   'MP_WEBHOOK_SECRET',
 ] as const;
 
-const PORT = Number(process.env.PORT) || 3001;
-
+const PORT = Number(process.env.PORT ?? 10000);
 let server: Server | null = null;
 let closeDatabasePool: (() => Promise<void>) | null = null;
 let stopMercadoPagoWebhookWorker: (() => void) | null = null;
