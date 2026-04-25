@@ -1,4 +1,19 @@
-CREATE TYPE "public"."user_plan_type" AS ENUM('free', 'pro', 'premium');--> statement-breakpoint
+DO $$ BEGIN
+  CREATE TYPE "public"."contract_status" AS ENUM('draft', 'editing', 'finalized');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
+
+CREATE EXTENSION IF NOT EXISTS "pgcrypto";
+--> statement-breakpoint
+
+DO $$ BEGIN
+  CREATE TYPE "public"."user_plan_type" AS ENUM('free', 'pro', 'premium');
+EXCEPTION
+  WHEN duplicate_object THEN null;
+END $$;
+--> statement-breakpoint
 
 CREATE TABLE IF NOT EXISTS "contract_templates" (
   "id" serial PRIMARY KEY NOT NULL,
@@ -18,19 +33,40 @@ CREATE TABLE IF NOT EXISTS "contracts" (
   "contract_value" numeric(12, 2) NOT NULL,
   "payment_method" varchar(120) NOT NULL,
   "service_scope" text NOT NULL,
-  "status" "contract_status" DEFAULT 'draft' NOT NULL,
+  "status" varchar(20) DEFAULT 'draft' NOT NULL,
   "template_id" integer,
   "layout_config" jsonb DEFAULT '{}'::jsonb NOT NULL,
+  "logo_url" text,
+  "share_token_hash" varchar(128),
+  "share_token_expires_at" timestamp,
+  "lifecycle_status" varchar(20) DEFAULT 'DRAFT',
+  "signed_at" timestamp,
+  "signer_name" varchar(140),
+  "signer_document" varchar(40),
+  "signature_ciphertext" text,
+  "signature_iv" varchar(255),
+  "signature_auth_tag" varchar(255),
+  "provider_signed_at" timestamp,
+  "provider_contract_ciphertext" text,
+  "provider_contract_iv" varchar(255),
+  "provider_contract_auth_tag" varchar(255),
+  "payment_released_at" timestamp,
+  "payment_confirmed_at" timestamp,
+  "payer_name" varchar(140),
+  "payer_document" varchar(40),
+  "payment_note" text,
   "created_at" timestamp DEFAULT now() NOT NULL,
-  "updated_at" timestamp DEFAULT now() NOT NULL
+  "updated_at" timestamp DEFAULT now() NOT NULL,
+  CONSTRAINT "contracts_share_token_hash_unique" UNIQUE("share_token_hash")
 );
 
 CREATE TABLE IF NOT EXISTS "clauses" (
-  "id" serial PRIMARY KEY NOT NULL,
-  "title" varchar(180) NOT NULL,
-  "content" text NOT NULL,
-  "category" varchar(100) NOT NULL,
-  "profession" varchar(80),
+  "id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
+  "title" text,
+  "content" text,
+  "category" text,
+  "profession" text,
+  "description" text,
   "is_default" boolean DEFAULT false NOT NULL,
   "created_at" timestamp DEFAULT now() NOT NULL
 );
@@ -38,7 +74,7 @@ CREATE TABLE IF NOT EXISTS "clauses" (
 CREATE TABLE IF NOT EXISTS "contract_clauses" (
   "id" serial PRIMARY KEY NOT NULL,
   "contract_id" integer NOT NULL,
-  "clause_id" integer NOT NULL,
+  "clause_id" uuid NOT NULL,
   "custom_content" text,
   "order_index" integer DEFAULT 0 NOT NULL
 );
