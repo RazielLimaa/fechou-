@@ -52,7 +52,7 @@ export function issueCsrfToken(req: Request, res: Response) {
   res.cookie('csrf_token', token, {
     httpOnly: false,
     secure: process.env.NODE_ENV === 'production',
-    sameSite: 'lax',
+    sameSite: process.env.NODE_ENV === 'production' ? 'none' : 'lax',
     path: '/',
     maxAge: 2 * 60 * 60 * 1000,
   });

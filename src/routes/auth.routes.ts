@@ -89,7 +89,7 @@ function accessCookieOptions() {
   return {
     httpOnly: true,
     secure: isProd,
-    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
     path: '/',
     maxAge: 15 * 60 * 1000,
   };
@@ -100,7 +100,7 @@ function refreshCookieOptions() {
   return {
     httpOnly: true,
     secure: isProd,
-    sameSite: (isProd ? 'strict' : 'lax') as 'strict' | 'lax',
+    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
     path: '/api/auth',
     maxAge: 7 * 24 * 60 * 60 * 1000,
   };

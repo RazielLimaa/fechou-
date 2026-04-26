@@ -51,8 +51,24 @@ function validateEnvironment() {
 async function bootstrap() {
   validateEnvironment();
 
-  const [{ default: app }, dbModule, mercadoPagoWebhookQueue] = await Promise.all([
-    import('./app.js'),
+  const { default: app } = await import('./app.js');
+
+  server = app.listen(PORT, '0.0.0.0', () => {
+    console.log(`Server running on port ${PORT}`);
+  });
+
+  server.on('error', (err) => {
+    console.error('[boot] failed to start HTTP server:', err);
+    process.exit(1);
+  });
+
+  void runStartupTasks().catch((err) => {
+    console.error('[boot] startup tasks failed:', err);
+  });
+}
+
+async function runStartupTasks() {
+  const [dbModule, mercadoPagoWebhookQueue] = await Promise.all([
     import('./db/index.js'),
     import('./services/payments/mercadoPagoWebhookQueue.js'),
   ]);
@@ -76,15 +92,6 @@ async function bootstrap() {
 
     console.warn('[boot] Postgres unavailable on startup. API will start in degraded mode.');
   }
-
-  server = app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Server running on port ${PORT}`);
-  });
-
-  server.on('error', (err) => {
-    console.error('[boot] failed to start HTTP server:', err);
-    process.exit(1);
-  });
 }
 
 async function shutdown(signal: string) {

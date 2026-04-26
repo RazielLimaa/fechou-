@@ -31,15 +31,20 @@ if (process.env.NODE_ENV === 'production') {
   app.set('trust proxy', 1);
 }
 
-const allowedOrigins = (
-  process.env.ALLOWED_ORIGINS ||
-  'http://localhost:5173, http://localhost:3000'
-)
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-
 const isProduction = process.env.NODE_ENV === 'production';
+const allowedOrigins = Array.from(
+  new Set(
+    [
+      process.env.FRONTEND_URL,
+      process.env.APP_URL,
+      ...(process.env.ALLOWED_ORIGINS || 'http://localhost:5173, http://localhost:3000')
+        .split(','),
+      ...(isProduction ? ['https://fechou.cloud'] : []),
+    ]
+      .map((s) => String(s ?? '').trim())
+      .filter(Boolean),
+  ),
+);
 
 app.use(
   helmet({
