@@ -156,6 +156,32 @@ function isDatabaseConnectionError(error: unknown): boolean {
   ].some((pattern) => message.includes(pattern) || causeMessage.includes(pattern));
 }
 
+function isMissingDatabaseObjectError(error: unknown): boolean {
+  const message = String((error as any)?.message ?? "").toLowerCase();
+  const causeMessage = String((error as any)?.cause?.message ?? "").toLowerCase();
+  const combined = `${message} ${causeMessage}`;
+
+  return (
+    combined.includes("does not exist") ||
+    combined.includes("não existe") ||
+    combined.includes("nao existe") ||
+    combined.includes("undefined table") ||
+    combined.includes("undefined column")
+  );
+}
+
+function freePlanPayload() {
+  return {
+    payments: [],
+    subscription: null,
+    plan: {
+      planId: "free" as const,
+      status: null,
+      isSubscribed: false,
+    },
+  };
+}
+
 function extractMercadoPagoProviderCode(providerMessage: string): string | undefined {
   const match = String(providerMessage ?? "")
     .trim()
@@ -954,6 +980,11 @@ router.get("/me", authenticate, async (req: AuthenticatedRequest, res) => {
       },
     });
   } catch (err: any) {
+    if (isMissingDatabaseObjectError(err)) {
+      console.warn("[payments/me:schema]", err?.message ?? err);
+      return res.json(freePlanPayload());
+    }
+
     if (isDatabaseConnectionError(err)) {
       console.warn("[payments/me:db]", err?.message ?? err);
       return res.status(503).json({

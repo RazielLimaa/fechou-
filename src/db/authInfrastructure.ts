@@ -108,6 +108,61 @@ async function ensureAuthInfrastructureNow() {
   await execute(sql`CREATE INDEX IF NOT EXISTS idx_prc_user_id ON password_reset_challenges(user_id, created_at)`);
   await execute(sql`CREATE INDEX IF NOT EXISTS idx_prc_code_hash ON password_reset_challenges(code_hash)`);
   await execute(sql`CREATE INDEX IF NOT EXISTS idx_prc_expires_at ON password_reset_challenges(expires_at)`);
+
+  await execute(sql`
+    DO $$ BEGIN
+      CREATE TYPE payment_mode AS ENUM ('payment', 'subscription');
+    EXCEPTION
+      WHEN duplicate_object THEN null;
+    END $$;
+  `);
+  await execute(sql`
+    DO $$ BEGIN
+      CREATE TYPE payment_status AS ENUM ('pending', 'paid', 'failed', 'expired');
+    EXCEPTION
+      WHEN duplicate_object THEN null;
+    END $$;
+  `);
+  await execute(sql`
+    CREATE TABLE IF NOT EXISTS payment_sessions (
+      id serial PRIMARY KEY,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      proposal_id integer REFERENCES proposals(id) ON DELETE SET NULL,
+      mode payment_mode NOT NULL,
+      status payment_status NOT NULL DEFAULT 'pending',
+      stripe_session_id varchar(140) NOT NULL UNIQUE,
+      stripe_payment_intent_id varchar(140),
+      stripe_subscription_id varchar(140),
+      mercado_pago_preference_id varchar(140),
+      mercado_pago_payment_id varchar(140),
+      amount numeric(12, 2) NOT NULL,
+      currency varchar(10) NOT NULL DEFAULT 'brl',
+      metadata jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamp with time zone NOT NULL DEFAULT now(),
+      updated_at timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
+  await execute(sql`CREATE INDEX IF NOT EXISTS idx_payment_sessions_user_id ON payment_sessions(user_id)`);
+  await execute(sql`CREATE INDEX IF NOT EXISTS idx_payment_sessions_status ON payment_sessions(status)`);
+  await execute(sql`CREATE INDEX IF NOT EXISTS idx_payment_sessions_created_at ON payment_sessions(created_at)`);
+
+  await execute(sql`
+    CREATE TABLE IF NOT EXISTS user_subscriptions (
+      id serial PRIMARY KEY,
+      user_id integer NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      stripe_subscription_id varchar(140) NOT NULL UNIQUE,
+      stripe_customer_id varchar(120) NOT NULL,
+      stripe_price_id varchar(140) NOT NULL,
+      status varchar(40) NOT NULL,
+      current_period_end timestamp with time zone,
+      cancel_at_period_end boolean NOT NULL DEFAULT false,
+      created_at timestamp with time zone NOT NULL DEFAULT now(),
+      updated_at timestamp with time zone NOT NULL DEFAULT now()
+    )
+  `);
+  await execute(sql`ALTER TABLE user_subscriptions ADD COLUMN IF NOT EXISTS id serial`);
+  await execute(sql`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_user_id ON user_subscriptions(user_id)`);
+  await execute(sql`CREATE INDEX IF NOT EXISTS idx_user_subscriptions_status ON user_subscriptions(status)`);
 }
 
 export function ensureAuthInfrastructure() {
