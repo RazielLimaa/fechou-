@@ -115,9 +115,9 @@ export function ensureTrustedFrontendRedirectUrl(raw: string): string {
 }
 
 export function getPublicAppBaseUrl(): string {
-  const explicit = String(process.env.APP_URL ?? "").trim();
+  const explicit = String(process.env.FRONTEND_URL ?? process.env.APP_URL ?? "").trim();
   if (explicit) {
-    return parseConfiguredUrl(explicit, "APP_URL").origin;
+    return parseConfiguredUrl(explicit, "FRONTEND_URL").origin;
   }
 
   if (process.env.NODE_ENV === "production") {

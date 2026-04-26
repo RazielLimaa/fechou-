@@ -10,7 +10,7 @@ import { OAuth2Client } from 'google-auth-library';
 // ── Google OAuth client ───────────────────────────────────────────────────────
 const googleClientId     = process.env.GOOGLE_CLIENT_ID;
 const googleClientSecret = process.env.GOOGLE_CLIENT_SECRET;
-const googleRedirectUri  = process.env.GOOGLE_REDIRECT_URI;
+const googleRedirectUri  = process.env.GOOGLE_CALLBACK_URL || process.env.GOOGLE_REDIRECT_URI;
 const googleRedirectUriList = String(process.env.GOOGLE_REDIRECT_URI_LIST ?? '')
   .split(',')
   .map((v) => v.trim())
@@ -18,7 +18,7 @@ const googleRedirectUriList = String(process.env.GOOGLE_REDIRECT_URI_LIST ?? '')
 
 if (!googleClientId || !googleClientSecret || !googleRedirectUri) {
   throw new Error(
-    'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_REDIRECT_URI são obrigatórios.'
+    'GOOGLE_CLIENT_ID, GOOGLE_CLIENT_SECRET e GOOGLE_CALLBACK_URL são obrigatórios.'
   );
 }
 const requiredGoogleClientId = googleClientId;
@@ -31,6 +31,24 @@ function buildGoogleOAuthClient(redirectUri: string) {
     requiredGoogleClientSecret,
     redirectUri
   );
+}
+
+export function getPrimaryGoogleCallbackUrl() {
+  return primaryGoogleRedirectUri;
+}
+
+export function buildGoogleAuthorizationUrl(state: string) {
+  const client = buildGoogleOAuthClient(primaryGoogleRedirectUri);
+  return client.generateAuthUrl({
+    access_type: 'offline',
+    prompt: 'select_account',
+    scope: ['openid', 'email', 'profile'],
+    state,
+  });
+}
+
+export async function verifyGoogleCallbackCode(code: string): Promise<GoogleUserPayload> {
+  return verifyGoogleCode(code, primaryGoogleRedirectUri);
 }
 
 function allowedRedirectUris() {
@@ -89,7 +107,7 @@ export async function verifyGoogleCode(code: string, requestedRedirectUri?: stri
     const msg = err instanceof Error ? err.message : String(err);
     if (msg.toLowerCase().includes('redirect_uri_mismatch')) {
       console.error('[verifyGoogleCode] getToken falhou: redirect_uri_mismatch. URIs permitidas:', orderedRedirects.join(', '));
-      throw new Error('Falha no login Google: redirect_uri_mismatch. Verifique GOOGLE_REDIRECT_URI / GOOGLE_REDIRECT_URI_LIST (ou use postmessage no fluxo popup) e Authorized redirect URIs no Google Cloud.');
+      throw new Error('Falha no login Google: redirect_uri_mismatch. Verifique GOOGLE_CALLBACK_URL e Authorized redirect URIs no Google Cloud.');
     }
     console.error('[verifyGoogleCode] getToken falhou:', msg);
     throw new Error('Falha ao verificar autenticação com o Google.');

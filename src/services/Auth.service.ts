@@ -207,8 +207,8 @@ export async function login(
 
 // ── Google OAuth ───────────────────────────────────────────────────────────────
 
-// URI padrão — deve bater com GOOGLE_REDIRECT_URI no .env e no Google Cloud Console
-const DEFAULT_REDIRECT_URI = process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:3001/auth/google/callback";
+// URI padrão — deve bater com GOOGLE_CALLBACK_URL no .env e no Google Cloud Console.
+const DEFAULT_REDIRECT_URI = process.env.GOOGLE_CALLBACK_URL ?? process.env.GOOGLE_REDIRECT_URI ?? "http://localhost:3001/auth/google/callback";
 
 // Lista de URIs permitidos para evitar open redirect
 const ALLOWED_REDIRECT_URIS = new Set([

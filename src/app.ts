@@ -32,19 +32,8 @@ if (process.env.NODE_ENV === 'production') {
 }
 
 const isProduction = process.env.NODE_ENV === 'production';
-const allowedOrigins = Array.from(
-  new Set(
-    [
-      process.env.FRONTEND_URL,
-      process.env.APP_URL,
-      'https://fechou.cloud',
-      ...(process.env.ALLOWED_ORIGINS || 'http://localhost:5173, http://localhost:3000')
-        .split(','),
-    ]
-      .map((s) => String(s ?? '').trim())
-      .filter(Boolean),
-  ),
-);
+const frontendOrigin = new URL(process.env.FRONTEND_URL || 'https://fechou.cloud').origin;
+const allowedOrigins = [frontendOrigin];
 
 app.use(
   helmet({
@@ -158,6 +147,7 @@ app.use(
       '/api/auth/login',
       '/api/auth/register',
       '/api/auth/google',
+      '/api/auth/google/callback',
       '/api/auth/refresh',
       '/api/auth/logout',
       '/api/auth/forgot-password',

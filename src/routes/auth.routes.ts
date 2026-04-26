@@ -1,9 +1,17 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
+import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { authRateLimiter } from '../middleware/security.js';
 import { distributedRateLimit, issueCsrfToken } from '../middleware/distributed-security.js';
-import { authenticate, signAccessToken, type AuthenticatedRequest, verifyGoogleCode } from '../middleware/auth.js';
+import {
+  authenticate,
+  buildGoogleAuthorizationUrl,
+  signAccessToken,
+  type AuthenticatedRequest,
+  verifyGoogleCallbackCode,
+  verifyGoogleCode,
+} from '../middleware/auth.js';
 import { storage } from '../storage.js';
 import { db } from '../db/index.js';
 import { ensureAuthInfrastructure } from '../db/authInfrastructure.js';
@@ -20,6 +28,7 @@ import {
   maskEmailAddress,
   verifyPasswordResetChallenge,
 } from '../services/password-reset.service.js';
+import { ensureTrustedFrontendRedirectUrl, getTrustedFrontendOrigin } from '../lib/httpSecurity.js';
 
 const strictAuthRateLimits =
   process.env.AUTH_STRICT_RATE_LIMITS === 'true' || process.env.NODE_ENV === 'production';
@@ -100,6 +109,7 @@ const forgotPasswordVerifyIdentityLimiter = distributedRateLimit({
 
 const ACCESS_COOKIE = 'access_token';
 const REFRESH_COOKIE = 'refresh_token';
+const GOOGLE_OAUTH_STATE_COOKIE = 'google_oauth_state';
 const ACCESS_COOKIE_PATH = '/';
 const REFRESH_COOKIE_PATH = '/';
 const LOGIN_DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEe.2IyE8mYkG4T9p7xGX2YeliYg5OtTSnS';
@@ -124,6 +134,90 @@ function refreshCookieOptions() {
     path: REFRESH_COOKIE_PATH,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   };
+}
+
+function oauthStateCookieOptions() {
+  const isProd = process.env.NODE_ENV === 'production';
+  return {
+    httpOnly: true,
+    secure: isProd,
+    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
+    path: '/',
+    maxAge: 10 * 60 * 1000,
+  };
+}
+
+function clearOAuthStateCookie(res: Response) {
+  const isProd = process.env.NODE_ENV === 'production';
+  res.clearCookie(GOOGLE_OAUTH_STATE_COOKIE, {
+    path: '/',
+    secure: isProd,
+    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
+  });
+}
+
+function safeFrontendRedirect(raw: unknown) {
+  const fallback = `${getTrustedFrontendOrigin()}/`;
+  const value = String(raw ?? '').trim();
+  if (!value) return fallback;
+
+  try {
+    if (value.startsWith('/')) {
+      return ensureTrustedFrontendRedirectUrl(`${getTrustedFrontendOrigin()}${value}`);
+    }
+    return ensureTrustedFrontendRedirectUrl(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function safeStateMatches(receivedState: string, expectedState: string) {
+  if (!/^[a-f0-9]{64}$/i.test(receivedState)) return false;
+  if (!/^[a-f0-9]{64}$/i.test(expectedState)) return false;
+  return crypto.timingSafeEqual(Buffer.from(receivedState), Buffer.from(expectedState));
+}
+
+async function upsertGoogleUser(googleUser: Awaited<ReturnType<typeof verifyGoogleCode>>): Promise<MinimalUser> {
+  const googleEmail = googleUser.email.toLowerCase();
+  const googleId = googleUser.googleId;
+  const googleName = googleUser.name ?? googleEmail.split('@')[0];
+  const avatarUrl = googleUser.avatarUrl ?? null;
+
+  const existing = await storage.findUserByEmail(googleEmail);
+
+  if (existing) {
+    if (!(existing as any).googleId) {
+      return storage.updateUserGoogleId(existing.id, { googleId, avatarUrl });
+    }
+    return existing;
+  }
+
+  return storage.createUser({
+    name: googleName,
+    email: googleEmail,
+    passwordHash: null as any,
+    googleId,
+    avatarUrl,
+    emailVerified: true,
+  } as any);
+}
+
+async function issueAuthCookiesForUser(req: Request, res: Response, user: MinimalUser) {
+  const token = signAccessToken({ id: user.id, email: user.email });
+  const refreshToken = await createRefreshToken(db as any, {
+    id: user.id,
+    email: user.email,
+    name: user.name,
+  }, null, {
+    userAgent: String(req.headers['user-agent'] ?? ''),
+    ipAddress: req.ip,
+  });
+
+  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
+  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
+  const csrfToken = issueCsrfToken(req, res);
+
+  return { token, csrfToken };
 }
 
 // ── Tipo mínimo de usuário ────────────────────────────────────────────────────
@@ -428,8 +522,58 @@ router.post(
   })
 );
 
+// ── GET /google ───────────────────────────────────────────────────────────────
+// Fluxo OAuth seguro: o frontend apenas redireciona para esta rota.
+router.get('/google', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
+  const state = crypto.randomBytes(32).toString('hex');
+  const redirectTo = safeFrontendRedirect(req.query.redirectTo);
+
+  res.cookie(GOOGLE_OAUTH_STATE_COOKIE, JSON.stringify({ state, redirectTo }), oauthStateCookieOptions());
+  console.info('[auth google] oauth_start');
+
+  return res.redirect(302, buildGoogleAuthorizationUrl(state));
+}));
+
+// ── GET /google/callback ──────────────────────────────────────────────────────
+router.get('/google/callback', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
+  console.info('[auth google] oauth_callback');
+
+  const cookiePayload = String(req.cookies?.[GOOGLE_OAUTH_STATE_COOKIE] ?? '').trim();
+  clearOAuthStateCookie(res);
+
+  let expectedState = '';
+  let redirectTo = `${getTrustedFrontendOrigin()}/`;
+  try {
+    const parsedCookie = JSON.parse(cookiePayload) as { state?: unknown; redirectTo?: unknown };
+    expectedState = String(parsedCookie.state ?? '').trim();
+    redirectTo = safeFrontendRedirect(parsedCookie.redirectTo);
+  } catch {
+    console.warn('[auth google] oauth_error state_cookie_invalid');
+    return res.redirect(302, `${getTrustedFrontendOrigin()}/login?oauth=error`);
+  }
+
+  const receivedState = String(req.query.state ?? '').trim();
+  const code = String(req.query.code ?? '').trim();
+  const providerError = String(req.query.error ?? '').trim();
+
+  if (providerError || !code || !safeStateMatches(receivedState, expectedState)) {
+    console.warn('[auth google] oauth_error invalid_callback');
+    return res.redirect(302, `${getTrustedFrontendOrigin()}/login?oauth=error`);
+  }
+
+  try {
+    const googleUser = await verifyGoogleCallbackCode(code);
+    const user = await upsertGoogleUser(googleUser);
+    await issueAuthCookiesForUser(req, res, user);
+    return res.redirect(302, redirectTo);
+  } catch (err) {
+    console.error('[auth google] oauth_error', err instanceof Error ? err.message : 'unknown');
+    return res.redirect(302, `${getTrustedFrontendOrigin()}/login?oauth=error`);
+  }
+}));
+
 // ── POST /google ──────────────────────────────────────────────────────────────
-// Authorization Code flow no backend (sem aceitar access_token do frontend).
+// Compatibilidade para o fluxo antigo. Não aceita tokens do frontend.
 router.post('/google', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
   const parsed = googleSchema.safeParse(req.body);
 
@@ -441,48 +585,12 @@ router.post('/google', authRateLimiter, authInfrastructure, optionalAuthLimiter(
   try {
     googleUser = await verifyGoogleCode(parsed.data.code, parsed.data.redirectUri);
   } catch (err) {
-    return res.status(401).json({ message: err instanceof Error ? err.message : 'Falha no login Google.' });
+    console.warn('[auth google] legacy_oauth_error');
+    return res.status(401).json({ message: 'Falha no login Google.' });
   }
 
-  const googleEmail = googleUser.email.toLowerCase();
-  const googleId    = googleUser.googleId;
-  const googleName  = googleUser.name ?? googleEmail.split('@')[0];
-  const avatarUrl   = googleUser.avatarUrl ?? null;
-
-  // 4. Upsert do usuário
-  let user: MinimalUser;
-
-  const existing = await storage.findUserByEmail(googleEmail);
-
-  if (existing) {
-    if (!(existing as any).googleId) {
-      user = await storage.updateUserGoogleId(existing.id, { googleId, avatarUrl });
-    } else {
-      user = existing;
-    }
-  } else {
-    user = await storage.createUser({
-      name:          googleName,
-      email:         googleEmail,
-      passwordHash:  null as any,
-      googleId,
-      avatarUrl,
-      emailVerified: true,
-    } as any);
-  }
-
-  const token = signAccessToken({ id: user.id, email: user.email });
-  const refreshToken = await createRefreshToken(db as any, {
-    id: user.id,
-    email: user.email,
-    name: user.name,
-  }, null, {
-    userAgent: String(req.headers['user-agent'] ?? ''),
-    ipAddress: req.ip,
-  });
-  res.cookie(ACCESS_COOKIE, token, accessCookieOptions());
-  res.cookie(REFRESH_COOKIE, refreshToken, refreshCookieOptions());
-  const csrfToken = issueCsrfToken(req, res);
+  const user = await upsertGoogleUser(googleUser);
+  const { token, csrfToken } = await issueAuthCookiesForUser(req, res, user);
 
   return res.status(200).json({
     token,

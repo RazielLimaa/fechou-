@@ -7,7 +7,7 @@ const REQUIRED_ENV = [
   'JWT_REFRESH_SECRET',
   'GOOGLE_CLIENT_ID',
   'GOOGLE_CLIENT_SECRET',
-  'GOOGLE_REDIRECT_URI',
+  'FRONTEND_URL',
   'SIGNATURES_MASTER_KEY',
 ] as const;
 
@@ -26,6 +26,11 @@ function validateEnvironment() {
 
   if (process.env.JWT_SECRET!.length < 32) {
     console.error('JWT_SECRET must have at least 32 characters.');
+    process.exit(1);
+  }
+
+  if (!process.env.GOOGLE_CALLBACK_URL && !process.env.GOOGLE_REDIRECT_URI) {
+    console.error('Required environment variable is missing: GOOGLE_CALLBACK_URL');
     process.exit(1);
   }
 
