@@ -68,13 +68,20 @@ async function bootstrap() {
 }
 
 async function runStartupTasks() {
-  const [dbModule, mercadoPagoWebhookQueue] = await Promise.all([
+  const [dbModule, mercadoPagoWebhookQueue, authInfrastructure] = await Promise.all([
     import('./db/index.js'),
     import('./services/payments/mercadoPagoWebhookQueue.js'),
+    import('./db/authInfrastructure.js'),
   ]);
 
   closeDatabasePool = dbModule.closeDatabasePool;
   stopMercadoPagoWebhookWorker = mercadoPagoWebhookQueue.stopMercadoPagoWebhookWorker;
+
+  try {
+    await authInfrastructure.ensureAuthInfrastructure();
+  } catch (err) {
+    console.error('[boot] failed to ensure auth/security database infrastructure:', err);
+  }
 
   const dbHealthy = await dbModule.testDatabaseConnectionWithRetry({
     maxAttempts: Number(process.env.DB_STARTUP_MAX_ATTEMPTS ?? 6),
@@ -113,6 +120,15 @@ process.on('SIGTERM', () => {
 });
 process.on('SIGINT', () => {
   void shutdown('SIGINT');
+});
+
+process.on('unhandledRejection', (reason) => {
+  console.error('[process] unhandled promise rejection:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[process] uncaught exception:', err);
+  process.exit(1);
 });
 
 void bootstrap().catch((err) => {

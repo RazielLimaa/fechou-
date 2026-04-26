@@ -282,7 +282,7 @@ export function refreshCookieOptions(): Record<string, unknown> {
   return {
     httpOnly: true,
     secure:   isProd,
-    sameSite: isProd ? "strict" : "lax",
+    sameSite: isProd ? "none" : "lax",
     maxAge:   7 * 24 * 60 * 60 * 1000,   // 7 dias em ms
     path:     "/api/auth",                // cookie só vai para rotas /api/auth
   };

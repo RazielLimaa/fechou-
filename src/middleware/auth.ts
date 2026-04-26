@@ -173,14 +173,16 @@ export function authenticate(
 ) {
   const authHeader = req.headers.authorization;
   const cookieToken = (req as any).cookies?.access_token;
+  const bearerToken = authHeader?.startsWith('Bearer ')
+    ? authHeader.slice('Bearer '.length).trim()
+    : '';
+  const fallbackCookieToken = String(cookieToken ?? '').trim();
 
-  if (!authHeader?.startsWith('Bearer ') && !cookieToken) {
+  if (!bearerToken && !fallbackCookieToken) {
     return res.status(401).json({ message: 'Token ausente.' });
   }
 
-  const token = authHeader?.startsWith('Bearer ')
-    ? authHeader.replace('Bearer ', '').trim()
-    : String(cookieToken).trim();
+  const token = bearerToken || fallbackCookieToken;
 
   let payload: unknown;
 

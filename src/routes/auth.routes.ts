@@ -1,4 +1,4 @@
-import { Router } from 'express';
+import { Router, type NextFunction, type Request, type Response } from 'express';
 import bcrypt from 'bcrypt';
 import { z } from 'zod';
 import { authRateLimiter } from '../middleware/security.js';
@@ -6,6 +6,7 @@ import { distributedRateLimit, issueCsrfToken } from '../middleware/distributed-
 import { authenticate, signAccessToken, type AuthenticatedRequest, verifyGoogleCode } from '../middleware/auth.js';
 import { storage } from '../storage.js';
 import { db } from '../db/index.js';
+import { ensureAuthInfrastructure } from '../db/authInfrastructure.js';
 import { createRefreshToken, rotateRefreshToken, revokeRefreshToken } from '../services/token.js';
 import { buildStepUpPayloadHash, issueStepUpToken } from '../services/stepUp.js';
 import { sendPasswordResetVerificationEmail } from '../services/mail.service.js';
@@ -27,6 +28,23 @@ function optionalAuthLimiter<T extends (req: any, res: any, next: any) => any>(m
   if (strictAuthRateLimits) return middleware;
   return (((_req: any, _res: any, next: any) => next()) as unknown) as T;
 }
+
+type AsyncRouteHandler<Req extends Request = Request> = (
+  req: Req,
+  res: Response,
+  next: NextFunction,
+) => Promise<unknown>;
+
+function asyncRoute<Req extends Request = Request>(handler: AsyncRouteHandler<Req>) {
+  return (req: Req, res: Response, next: NextFunction) => {
+    Promise.resolve(handler(req, res, next)).catch(next);
+  };
+}
+
+const authInfrastructure = asyncRoute(async (_req, _res, next) => {
+  await ensureAuthInfrastructure();
+  next();
+});
 
 const router = Router();
 router.use((_req, res, next) => {
@@ -82,6 +100,8 @@ const forgotPasswordVerifyIdentityLimiter = distributedRateLimit({
 
 const ACCESS_COOKIE = 'access_token';
 const REFRESH_COOKIE = 'refresh_token';
+const ACCESS_COOKIE_PATH = '/';
+const REFRESH_COOKIE_PATH = '/';
 const LOGIN_DUMMY_HASH = '$2b$12$C6UzMDM.H6dfI/f/IKcEe.2IyE8mYkG4T9p7xGX2YeliYg5OtTSnS';
 
 function accessCookieOptions() {
@@ -90,7 +110,7 @@ function accessCookieOptions() {
     httpOnly: true,
     secure: isProd,
     sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
-    path: '/',
+    path: ACCESS_COOKIE_PATH,
     maxAge: 15 * 60 * 1000,
   };
 }
@@ -101,7 +121,7 @@ function refreshCookieOptions() {
     httpOnly: true,
     secure: isProd,
     sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
-    path: '/api/auth',
+    path: REFRESH_COOKIE_PATH,
     maxAge: 7 * 24 * 60 * 60 * 1000,
   };
 }
@@ -191,7 +211,7 @@ function getRequestMeta(req: { headers: Record<string, unknown>; ip?: string | n
 
 // ── POST /register ────────────────────────────────────────────────────────────
 
-router.post('/register', authRateLimiter, optionalAuthLimiter(authDistributedLimiter), optionalAuthLimiter(authIdentityLimiter), async (req, res) => {
+router.post('/register', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), optionalAuthLimiter(authIdentityLimiter), asyncRoute(async (req, res) => {
   const parsed = registerSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -226,11 +246,11 @@ router.post('/register', authRateLimiter, optionalAuthLimiter(authDistributedLim
   const csrfToken = issueCsrfToken(req, res);
 
   return res.status(201).json({ user, token, csrfToken });
-});
+}));
 
 // ── POST /login ───────────────────────────────────────────────────────────────
 
-router.post('/login', authRateLimiter, optionalAuthLimiter(authDistributedLimiter), optionalAuthLimiter(authIdentityLimiter), async (req, res) => {
+router.post('/login', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), optionalAuthLimiter(authIdentityLimiter), asyncRoute(async (req, res) => {
   const parsed = loginSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -273,14 +293,15 @@ router.post('/login', authRateLimiter, optionalAuthLimiter(authDistributedLimite
     csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
-});
+}));
 
 router.post(
   '/forgot-password',
   authRateLimiter,
+  authInfrastructure,
   optionalAuthLimiter(forgotPasswordLimiter),
   optionalAuthLimiter(forgotPasswordIdentityLimiter),
-  async (req, res) => {
+  asyncRoute(async (req, res) => {
     const parsed = forgotPasswordSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: 'Dados inválidos.' });
@@ -318,15 +339,16 @@ router.post(
       ok: true,
       message: 'Se o e-mail existir, você receberá instruções para redefinir a senha.',
     });
-  }
+  })
 );
 
 router.post(
   '/forgot-password/verify-code',
   authRateLimiter,
+  authInfrastructure,
   optionalAuthLimiter(forgotPasswordVerifyLimiter),
   optionalAuthLimiter(forgotPasswordVerifyIdentityLimiter),
-  async (req, res) => {
+  asyncRoute(async (req, res) => {
     const parsed = verifyForgotPasswordCodeSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: 'Dados invalidos.', errors: parsed.error.flatten() });
@@ -366,14 +388,15 @@ router.post(
       expiresMinutes,
       emailHint: maskEmailAddress(user.email),
     });
-  }
+  })
 );
 
 router.post(
   '/reset-password',
   authRateLimiter,
+  authInfrastructure,
   optionalAuthLimiter(resetPasswordLimiter),
-  async (req, res) => {
+  asyncRoute(async (req, res) => {
     const parsed = resetPasswordSchema.safeParse(req.body);
     if (!parsed.success) {
       return res.status(400).json({ message: 'Dados inválidos.', errors: parsed.error.flatten() });
@@ -394,20 +417,20 @@ router.post(
       });
     }
 
-    res.clearCookie(ACCESS_COOKIE, { path: '/' });
-    res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+    res.clearCookie(ACCESS_COOKIE, { path: ACCESS_COOKIE_PATH });
+    res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
     res.clearCookie('csrf_token', { path: '/' });
 
     return res.status(200).json({
       ok: true,
       message: 'Senha redefinida com sucesso. Faça login novamente.',
     });
-  }
+  })
 );
 
 // ── POST /google ──────────────────────────────────────────────────────────────
 // Authorization Code flow no backend (sem aceitar access_token do frontend).
-router.post('/google', authRateLimiter, optionalAuthLimiter(authDistributedLimiter), async (req, res) => {
+router.post('/google', authRateLimiter, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
   const parsed = googleSchema.safeParse(req.body);
 
   if (!parsed.success) {
@@ -466,9 +489,9 @@ router.post('/google', authRateLimiter, optionalAuthLimiter(authDistributedLimit
     csrfToken,
     user: { id: user.id, name: user.name, email: user.email, createdAt: user.createdAt },
   });
-});
+}));
 
-router.post('/refresh', optionalAuthLimiter(authDistributedLimiter), async (req, res) => {
+router.post('/refresh', authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
   const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
   if (!currentRefresh) {
     return res.status(401).json({ message: 'Sessão expirada.' });
@@ -496,26 +519,26 @@ router.post('/refresh', optionalAuthLimiter(authDistributedLimiter), async (req,
   } catch {
     return res.status(401).json({ message: 'Sessão inválida ou revogada.' });
   }
-});
+}));
 
-router.post('/logout', async (req, res) => {
+router.post('/logout', authInfrastructure, asyncRoute(async (req, res) => {
   const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
   if (currentRefresh) {
     await revokeRefreshToken(db as any, currentRefresh);
   }
 
-  res.clearCookie(ACCESS_COOKIE, { path: '/' });
-  res.clearCookie(REFRESH_COOKIE, { path: '/api/auth' });
+  res.clearCookie(ACCESS_COOKIE, { path: ACCESS_COOKIE_PATH });
+  res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
   res.clearCookie('csrf_token', { path: '/' });
   return res.status(200).json({ ok: true });
-});
+}));
 
-router.get('/csrf', async (req, res) => {
+router.get('/csrf', asyncRoute(async (req, res) => {
   const csrfToken = issueCsrfToken(req, res);
   return res.status(200).json({ csrfToken });
-});
+}));
 
-router.post('/step-up/request', authenticate, optionalAuthLimiter(authDistributedLimiter), async (req: AuthenticatedRequest, res) => {
+router.post('/step-up/request', authenticate, authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
   if (!userId) return res.status(401).json({ message: 'Não autenticado.' });
 
@@ -546,11 +569,11 @@ router.post('/step-up/request', authenticate, optionalAuthLimiter(authDistribute
   });
 
   return res.status(201).json(token);
-});
+}));
 
 // ── GET /me ───────────────────────────────────────────────────────────────────
 
-router.get('/me', authenticate, async (req: AuthenticatedRequest, res) => {
+router.get('/me', authenticate, authInfrastructure, asyncRoute(async (req: AuthenticatedRequest, res) => {
   const userId = req.user?.id;
 
   if (!userId) {
@@ -564,6 +587,6 @@ router.get('/me', authenticate, async (req: AuthenticatedRequest, res) => {
   }
 
   return res.json(user);
-});
+}));
 
 export default router;
