@@ -165,6 +165,14 @@ function buildRequestOrigin(req: Request) {
   return `${req.protocol}://${host}`;
 }
 
+function buildPublicContractUrl(token: string) {
+  const frontendOrigin = String(process.env.FRONTEND_URL || process.env.APP_URL || "https://fechou.cloud")
+    .trim()
+    .replace(/\/+$/, "");
+
+  return `${frontendOrigin}/c/${token}`;
+}
+
 export function isTrustedPreviewAssetRequest(req: Request, contractId: number) {
   const fetchDest = String(req.header("sec-fetch-dest") ?? "").trim().toLowerCase();
   if (fetchDest && fetchDest !== "image") {
@@ -1705,7 +1713,8 @@ router.post("/:id/share-link", async (req: AuthenticatedRequest, res: Response) 
   return res.status(201).json({
     shareToken: rawToken,
     expiresAt,
-    publicUrlPath: `/p/review/${rawToken}`,
+    publicUrl: buildPublicContractUrl(rawToken),
+    publicUrlPath: `/c/${rawToken}`,
   });
 });
 

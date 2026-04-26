@@ -37,9 +37,9 @@ const allowedOrigins = Array.from(
     [
       process.env.FRONTEND_URL,
       process.env.APP_URL,
+      'https://fechou.cloud',
       ...(process.env.ALLOWED_ORIGINS || 'http://localhost:5173, http://localhost:3000')
         .split(','),
-      ...(isProduction ? ['https://fechou.cloud'] : []),
     ]
       .map((s) => String(s ?? '').trim())
       .filter(Boolean),

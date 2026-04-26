@@ -12,9 +12,8 @@
 
 [[redirects]]
   from = "/c/*"
-  to = "/p/review/:splat"
-  status = 301
-  force = true
+  to = "/index.html"
+  status = 200
 
 [[redirects]]
   from = "/p/*"
