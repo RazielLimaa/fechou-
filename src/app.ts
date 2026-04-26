@@ -202,6 +202,15 @@ for (const path of deceptionRoutes) {
 }
 
 app.use('/api/auth', authRoutes);
+app.use('/auth', authRoutes);
+
+for (const path of ['/login', '/register', '/forgot-password', '/forgot-password/verify-code', '/reset-password']) {
+  app.post(path, (req, res, next) => {
+    req.url = path;
+    authRoutes(req, res, next);
+  });
+}
+
 app.use('/api/proposals', proposalsRoutes);
 app.use('/api/templates', templatesRoutes);
 app.use('/api/metrics', metricsRoutes);
