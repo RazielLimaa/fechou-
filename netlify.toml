@@ -9,3 +9,19 @@
   to = "https://fechou-backend-g69o.onrender.com/health"
   status = 200
   force = true
+
+[[redirects]]
+  from = "/c/*"
+  to = "/p/review/:splat"
+  status = 301
+  force = true
+
+[[redirects]]
+  from = "/p/*"
+  to = "/index.html"
+  status = 200
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
