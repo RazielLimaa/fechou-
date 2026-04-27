@@ -77,9 +77,9 @@ export class Storage {
         name:         input.name,
         email:        input.email,
         passwordHash: input.passwordHash ?? "",
-        ...( input.googleId     !== undefined && { googleId:      input.googleId }     as any ),
-        ...( input.avatarUrl    !== undefined && { avatarUrl:     input.avatarUrl }    as any ),
-        ...( input.emailVerified !== undefined && { emailVerified: input.emailVerified } as any ),
+        ...(input.googleId !== undefined ? { googleId: input.googleId } : {}),
+        ...(input.avatarUrl !== undefined ? { avatarUrl: input.avatarUrl } : {}),
+        ...(input.emailVerified !== undefined ? { emailVerified: input.emailVerified } : {}),
       })
       .returning({
         id:        users.id,
@@ -100,7 +100,8 @@ export class Storage {
         UPDATE users
         SET
           google_id  = ${data.googleId},
-          avatar_url = ${data.avatarUrl}
+          avatar_url = ${data.avatarUrl},
+          email_verified = true
         WHERE id = ${userId}
         RETURNING id, name, email, created_at
       `

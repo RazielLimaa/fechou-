@@ -1,6 +1,7 @@
 import { Router, type NextFunction, type Request, type Response } from 'express';
 import crypto from 'node:crypto';
 import bcrypt from 'bcrypt';
+import jwt from 'jsonwebtoken';
 import { z } from 'zod';
 import { authRateLimiter } from '../middleware/security.js';
 import { distributedRateLimit, issueCsrfToken } from '../middleware/distributed-security.js';
@@ -136,6 +137,43 @@ function refreshCookieOptions() {
   };
 }
 
+function clearAuthCookies(res: Response) {
+  const isProd = process.env.NODE_ENV === 'production';
+  const cookieOptions = {
+    secure: isProd,
+    sameSite: (isProd ? 'none' : 'lax') as 'none' | 'lax',
+  };
+
+  res.clearCookie(ACCESS_COOKIE, { path: ACCESS_COOKIE_PATH, ...cookieOptions });
+  res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH, ...cookieOptions });
+  res.clearCookie('csrf_token', { path: '/', ...cookieOptions });
+}
+
+function isBcryptHash(value: unknown) {
+  return typeof value === 'string' && /^\$2[aby]\$\d{2}\$/.test(value);
+}
+
+function verifyAccessCookieToken(rawToken: string) {
+  try {
+    const payload = jwt.verify(rawToken, process.env.JWT_SECRET!, {
+      algorithms: ['HS256'],
+      issuer: process.env.JWT_ISSUER ?? 'fechou-api',
+      audience: process.env.JWT_AUDIENCE ?? 'fechou-client',
+    }) as jwt.JwtPayload;
+
+    const subject = typeof payload.sub === 'string' ? Number(payload.sub) : NaN;
+    const email = typeof payload.email === 'string' ? payload.email : '';
+    if (!Number.isFinite(subject) || subject <= 0 || !email) return null;
+
+    return {
+      id: subject,
+      email,
+    };
+  } catch {
+    return null;
+  }
+}
+
 function oauthStateCookieOptions() {
   const isProd = process.env.NODE_ENV === 'production';
   return {
@@ -218,6 +256,40 @@ async function issueAuthCookiesForUser(req: Request, res: Response, user: Minima
   const csrfToken = issueCsrfToken(req, res);
 
   return { token, csrfToken };
+}
+
+async function restoreSessionFromRefreshCookie(req: Request, res: Response) {
+  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
+  if (!currentRefresh) return null;
+
+  try {
+    const rotated = await rotateRefreshToken(db as any, currentRefresh, {
+      userAgent: String(req.headers['user-agent'] ?? ''),
+      ipAddress: req.ip,
+    });
+
+    const user = await storage.findUserById(rotated.userId);
+    if (!user) {
+      clearAuthCookies(res);
+      return null;
+    }
+
+    const accessToken = signAccessToken({ id: user.id, email: user.email });
+    res.cookie(ACCESS_COOKIE, accessToken, accessCookieOptions());
+    res.cookie(REFRESH_COOKIE, rotated.newRawToken, refreshCookieOptions());
+    const csrfToken = issueCsrfToken(req, res);
+
+    return {
+      user,
+      accessToken,
+      refreshToken: rotated.newRawToken,
+      csrfToken,
+    };
+  } catch (err) {
+    console.warn('[auth refresh] session_restore_failed', err instanceof Error ? err.message : 'unknown');
+    clearAuthCookies(res);
+    return null;
+  }
 }
 
 // ── Tipo mínimo de usuário ────────────────────────────────────────────────────
@@ -353,17 +425,24 @@ router.post('/login', authRateLimiter, authInfrastructure, optionalAuthLimiter(a
 
   const normalizedEmail = parsed.data.email.toLowerCase();
   const user = await storage.findUserByEmail(normalizedEmail);
+  const passwordHash = isBcryptHash(user?.passwordHash) ? user.passwordHash : LOGIN_DUMMY_HASH;
+
+  if (user?.googleId && !isBcryptHash(user.passwordHash)) {
+    return res.status(400).json({
+      message: 'Esta conta usa login com Google. Clique em "Entrar com Google".',
+    });
+  }
 
   const passwordMatches = await bcrypt.compare(
     parsed.data.password,
-    user?.passwordHash ?? LOGIN_DUMMY_HASH
+    passwordHash
   );
 
   if (!user || !passwordMatches) {
     return res.status(401).json({ message: 'Credenciais inválidas.' });
   }
 
-  if (!user.passwordHash) {
+  if (!isBcryptHash(user.passwordHash)) {
     return res.status(400).json({
       message: 'Esta conta usa login com Google. Clique em "Entrar com Google".',
     });
@@ -511,9 +590,7 @@ router.post(
       });
     }
 
-    res.clearCookie(ACCESS_COOKIE, { path: ACCESS_COOKIE_PATH });
-    res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
-    res.clearCookie('csrf_token', { path: '/' });
+    clearAuthCookies(res);
 
     return res.status(200).json({
       ok: true,
@@ -600,33 +677,21 @@ router.post('/google', authRateLimiter, authInfrastructure, optionalAuthLimiter(
 }));
 
 router.post('/refresh', authInfrastructure, optionalAuthLimiter(authDistributedLimiter), asyncRoute(async (req, res) => {
-  const currentRefresh = String(req.cookies?.[REFRESH_COOKIE] ?? '').trim();
-  if (!currentRefresh) {
+  if (!String(req.cookies?.[REFRESH_COOKIE] ?? '').trim()) {
+    clearAuthCookies(res);
     return res.status(401).json({ message: 'Sessão expirada.' });
   }
 
-  try {
-    const rotated = await rotateRefreshToken(db as any, currentRefresh, {
-      userAgent: String(req.headers['user-agent'] ?? ''),
-      ipAddress: req.ip,
-    });
-
-    const user = await storage.findUserById(rotated.userId);
-    if (!user) return res.status(401).json({ message: 'Sessão inválida.' });
-
-    const accessToken = signAccessToken({ id: user.id, email: user.email });
-    res.cookie(ACCESS_COOKIE, accessToken, accessCookieOptions());
-    res.cookie(REFRESH_COOKIE, rotated.newRawToken, refreshCookieOptions());
-    const csrfToken = issueCsrfToken(req, res);
-
-    return res.status(200).json({
-      token: accessToken,
-      csrfToken,
-      user,
-    });
-  } catch {
+  const restored = await restoreSessionFromRefreshCookie(req, res);
+  if (!restored) {
     return res.status(401).json({ message: 'Sessão inválida ou revogada.' });
   }
+
+  return res.status(200).json({
+    token: restored.accessToken,
+    csrfToken: restored.csrfToken,
+    user: restored.user,
+  });
 }));
 
 router.post('/logout', authInfrastructure, asyncRoute(async (req, res) => {
@@ -635,9 +700,7 @@ router.post('/logout', authInfrastructure, asyncRoute(async (req, res) => {
     await revokeRefreshToken(db as any, currentRefresh);
   }
 
-  res.clearCookie(ACCESS_COOKIE, { path: ACCESS_COOKIE_PATH });
-  res.clearCookie(REFRESH_COOKIE, { path: REFRESH_COOKIE_PATH });
-  res.clearCookie('csrf_token', { path: '/' });
+  clearAuthCookies(res);
   return res.status(200).json({ ok: true });
 }));
 
@@ -681,20 +744,27 @@ router.post('/step-up/request', authenticate, authInfrastructure, optionalAuthLi
 
 // ── GET /me ───────────────────────────────────────────────────────────────────
 
-router.get('/me', authenticate, authInfrastructure, asyncRoute(async (req: AuthenticatedRequest, res) => {
-  const userId = req.user?.id;
+router.get('/me', authInfrastructure, asyncRoute(async (req, res) => {
+  const accessToken = String(req.cookies?.[ACCESS_COOKIE] ?? '').trim();
+  const accessPayload = accessToken ? verifyAccessCookieToken(accessToken) : null;
 
-  if (!userId) {
+  if (accessPayload) {
+    const user = await storage.findUserById(accessPayload.id);
+
+    if (!user) {
+      clearAuthCookies(res);
+      return res.status(404).json({ message: 'Usuário não encontrado.' });
+    }
+
+    return res.json(user);
+  }
+
+  const restored = await restoreSessionFromRefreshCookie(req, res);
+  if (!restored) {
     return res.status(401).json({ message: 'Não autenticado.' });
   }
 
-  const user = await storage.findUserById(userId);
-
-  if (!user) {
-    return res.status(404).json({ message: 'Usuário não encontrado.' });
-  }
-
-  return res.json(user);
+  return res.json(restored.user);
 }));
 
 export default router;

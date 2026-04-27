@@ -8,6 +8,11 @@ async function execute(statement: ReturnType<typeof sql>) {
 }
 
 async function ensureAuthInfrastructureNow() {
+  await execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS google_id varchar(255)`);
+  await execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url text`);
+  await execute(sql`ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified boolean NOT NULL DEFAULT false`);
+  await execute(sql`CREATE UNIQUE INDEX IF NOT EXISTS idx_users_google_id ON users(google_id) WHERE google_id IS NOT NULL`);
+
   await execute(sql`
     CREATE TABLE IF NOT EXISTS refresh_tokens (
       id serial PRIMARY KEY,
