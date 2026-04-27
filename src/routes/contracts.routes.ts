@@ -40,6 +40,8 @@ import {
 } from "../lib/signaturePreview.js";
 
 const router = Router();
+const frontendOrigin = new URL(process.env.FRONTEND_URL || "https://fechou.cloud").origin;
+const previewFrameAncestors = ["'self'", frontendOrigin].join(" ");
 
 function setPublicNoCache(res: Response) {
   res.setHeader("Cache-Control", "no-store");
@@ -69,12 +71,12 @@ function setPreviewDocumentHeaders(res: Response, etag: string) {
   res.setHeader("Vary", "Cookie, Authorization");
   res.setHeader("ETag", `"${etag}"`);
   res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Cross-Origin-Resource-Policy", "same-origin");
-  res.setHeader("X-Frame-Options", "SAMEORIGIN");
+  res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.removeHeader("X-Frame-Options");
   res.setHeader("X-Robots-Tag", "noindex, noarchive, nosnippet, noimageindex");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors 'self'; connect-src 'none'",
+    `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${previewFrameAncestors}; connect-src 'none'`,
   );
 }
 
@@ -84,10 +86,11 @@ function setPublicPreviewDocumentHeaders(res: Response, etag: string) {
   res.setHeader("Vary", "Origin");
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+  res.removeHeader("X-Frame-Options");
   res.setHeader("X-Robots-Tag", "noindex, noarchive, nosnippet, noimageindex");
   res.setHeader(
     "Content-Security-Policy",
-    "default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; connect-src 'none'",
+    `default-src 'none'; img-src 'self' data:; style-src 'unsafe-inline'; font-src 'self' data:; object-src 'none'; base-uri 'none'; form-action 'none'; frame-ancestors ${previewFrameAncestors}; connect-src 'none'`,
   );
 }
 
